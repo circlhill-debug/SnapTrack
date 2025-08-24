@@ -33,22 +33,37 @@
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Snap a USPS label, I’ll read the tracking number, then open the official USPS tracking page.</p>
+      <p class="muted">Snap or upload a USPS label, crop if needed, I’ll read the tracking number, then open the official USPS tracking page.</p>
     </header>
 
     <div class="grid">
+      <!-- 1) Capture / Upload -->
       <section class="card">
-        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
           <div>
             <h3 style="margin:.25rem 0">1) Take or upload a photo</h3>
-            <p class="muted" style="margin:0">Use the rear camera in good light, fill the frame with the label.</p>
+            <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Or upload and crop first.</p>
           </div>
-          <button id="pickBtn">Snap / Upload</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button id="snapBtn">Snap (Camera)</button>
+            <button id="uploadBtn">Upload from Photos</button>
+          </div>
         </div>
-        <input id="file" type="file" accept="image/*" capture="environment" style="display:none" />
+        <!-- Two inputs: camera + photo library -->
+        <input id="fileSnap"   type="file" accept="image/*" capture="environment" style="display:none" />
+        <input id="fileUpload" type="file" accept="image/*" style="display:none" />
+
+        <!-- Preview + Crop UI -->
         <div id="previewWrap" style="margin-top:12px;display:none">
-          <img id="preview" class="img" alt="label preview" />
+          <canvas id="canvas" class="img" style="touch-action:none"></canvas>
+          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap">
+            <button id="ocrSelection" class="primary">OCR selection</button>
+            <button id="ocrFull">OCR whole image</button>
+            <span class="muted" style="font-size:.9rem">Tip: drag to draw a box; drag again to re-draw.</span>
+          </div>
         </div>
+
+        <!-- Progress + Errors -->
         <div id="progWrap" style="margin-top:12px;display:none">
           <div class="muted" style="font-weight:600;margin-bottom:6px">
             Reading text… <span id="pct">0</span>%
@@ -58,6 +73,7 @@
         <div id="err" class="card bad" style="margin-top:12px;display:none"></div>
       </section>
 
+      <!-- 2) Candidates -->
       <section class="card">
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
           <div>
@@ -80,6 +96,7 @@
         <div id="many" class="list" style="margin-top:12px;display:grid;gap:8px"></div>
       </section>
 
+      <!-- 3) Raw OCR -->
       <section class="card">
         <h3 style="margin:.25rem 0">3) Raw OCR (troubleshooting)</h3>
         <p class="muted" style="margin:0 0 6px">If this looks messy, try another angle or more light.</p>
@@ -95,49 +112,159 @@
   <!-- Tesseract.js OCR (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
-    const fileInput = document.getElementById('file');
-    const pickBtn = document.getElementById('pickBtn');
-    const previewWrap = document.getElementById('previewWrap');
-    const preview = document.getElementById('preview');
-    const progWrap = document.getElementById('progWrap');
-    const pct = document.getElementById('pct');
-    const bar = document.getElementById('bar');
-    const err = document.getElementById('err');
-    const rawOut = document.getElementById('raw');
-    const many = document.getElementById('many');
-    const bestBox = document.getElementById('best');
-    const bestNum = document.getElementById('bestNum');
-    const openBest = document.getElementById('openBest');
-    const copyBest = document.getElementById('copyBest');
-    const autoOpen = document.getElementById('autoOpen');
+    // Elements
+    const fileSnap   = document.getElementById('fileSnap');
+    const fileUpload = document.getElementById('fileUpload');
+    const snapBtn    = document.getElementById('snapBtn');
+    const uploadBtn  = document.getElementById('uploadBtn');
 
+    const previewWrap= document.getElementById('previewWrap');
+    const canvas     = document.getElementById('canvas');
+    const ctx        = canvas.getContext('2d');
+
+    const progWrap   = document.getElementById('progWrap');
+    const pct        = document.getElementById('pct');
+    const bar        = document.getElementById('bar');
+    const err        = document.getElementById('err');
+
+    const rawOut     = document.getElementById('raw');
+    const many       = document.getElementById('many');
+    const bestBox    = document.getElementById('best');
+    const bestNum    = document.getElementById('bestNum');
+    const openBest   = document.getElementById('openBest');
+    const copyBest   = document.getElementById('copyBest');
+    const autoOpen   = document.getElementById('autoOpen');
+
+    const ocrSelectionBtn = document.getElementById('ocrSelection');
+    const ocrFullBtn      = document.getElementById('ocrFull');
+
+    // State
     let candidates = [];
     let best = null;
 
-    pickBtn.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', onFile);
+    let originalImg = null;  // ImageBitmap
+    let displayScale = 1;    // canvas pixels per image pixel
+    let cropRect = null;     // {x,y,w,h} in canvas coords
+    let isDragging = false;
+
+    // UI events
+    snapBtn.addEventListener('click',   () => fileSnap.click());
+    uploadBtn.addEventListener('click', () => fileUpload.click());
+    fileSnap.addEventListener('change', onFile);
+    fileUpload.addEventListener('change', onFile);
 
     openBest.addEventListener('click', () => { if (best) openUSPS(best); });
     copyBest.addEventListener('click', async () => { if (best) await navigator.clipboard.writeText(best); });
 
+    ocrSelectionBtn.addEventListener('click', async () => {
+      if (!originalImg) return;
+      if (!cropRect || cropRect.w < 10 || cropRect.h < 10) {
+        await ocrCanvas(makeDownscaledCanvas(originalImg));
+        return;
+      }
+      const cropped = cropFromCanvas();
+      await ocrCanvas(cropped);
+    });
+
+    ocrFullBtn.addEventListener('click', async () => {
+      if (!originalImg) return;
+      await ocrCanvas(makeDownscaledCanvas(originalImg));
+    });
+
+    // File handling
     async function onFile(e){
       const f = e.target.files && e.target.files[0];
       if(!f) return;
       resetUI();
 
       const url = URL.createObjectURL(f);
-      preview.src = url;
-      previewWrap.style.display = '';
-
       try {
+        originalImg = await createImageBitmap(await fetch(url).then(r=>r.blob()));
+        setupCanvasForImage(originalImg);
+        previewWrap.style.display = '';
+        // No immediate OCR—user can crop first.
+      } catch(ex){
+        err.textContent = 'Could not load image. Try another photo.';
+        err.style.display = '';
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    function setupCanvasForImage(img) {
+      // Fit image to canvas width while preserving aspect
+      const maxW = Math.min(1200, Math.max(360, Math.floor(window.innerWidth - 40)));
+      const scale = Math.min(1, maxW / img.width);
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      displayScale = scale;
+
+      cropRect = null;
+      drawCanvas();
+      attachCropEvents();
+    }
+
+    function drawCanvas() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (!originalImg) return;
+      ctx.drawImage(originalImg, 0, 0, originalImg.width*displayScale, originalImg.height*displayScale);
+
+      if (cropRect) {
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,.25)';
+        ctx.fillRect(0,0,canvas.width,canvas.height);
+        ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+        ctx.restore();
+      }
+    }
+
+    function attachCropEvents(){
+      canvas.onpointerdown = (ev) => {
+        const {x,y} = canvasPoint(ev);
+        cropRect = { x, y, w: 0, h: 0 };
+        isDragging = true;
+        canvas.setPointerCapture(ev.pointerId);
+      };
+      canvas.onpointermove = (ev) => {
+        if (!isDragging || !cropRect) return;
+        const {x,y} = canvasPoint(ev);
+        cropRect.w = x - cropRect.x;
+        cropRect.h = y - cropRect.y;
+        if (cropRect.w < 0) { cropRect.x += cropRect.w; cropRect.w *= -1; }
+        if (cropRect.h < 0) { cropRect.y += cropRect.h; cropRect.h *= -1; }
+        drawCanvas();
+      };
+      canvas.onpointerup = (ev) => {
+        isDragging = false;
+        canvas.releasePointerCapture(ev.pointerId);
+        drawCanvas();
+      };
+    }
+
+    function canvasPoint(ev){
+      const r = canvas.getBoundingClientRect();
+      const x = (ev.clientX - r.left) * (canvas.width / r.width);
+      const y = (ev.clientY - r.top)  * (canvas.height / r.height);
+      return {
+        x: Math.max(0, Math.min(canvas.width,  x)),
+        y: Math.max(0, Math.min(canvas.height, y))
+      };
+    }
+
+    // OCR runner
+    async function ocrCanvas(srcCanvas){
+      try {
+        err.style.display = 'none';
         progWrap.style.display = '';
         pct.textContent = '0'; bar.style.width = '0%';
 
-        const src = await downscale(url, 1800);
-        const res = await Tesseract.recognize(src, 'eng', {
+        const res = await Tesseract.recognize(srcCanvas, 'eng', {
           logger: m => {
-            if(m.status === 'recognizing text' && typeof m.progress === 'number') {
-              const p = Math.round(m.progress*100);
+            if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+              const p = Math.round(m.progress * 100);
               pct.textContent = String(p);
               bar.style.width = p + '%';
             }
@@ -150,7 +277,7 @@
         candidates = extractUsps(text);
         renderCandidates();
 
-        if(candidates.length === 1 && autoOpen.checked){
+        if (candidates.length === 1 && autoOpen.checked) {
           openUSPS(candidates[0]);
         }
       } catch(ex){
@@ -158,43 +285,6 @@
         err.style.display = '';
       } finally {
         progWrap.style.display = 'none';
-      }
-    }
-
-    function resetUI(){
-      err.style.display = 'none';
-      many.innerHTML = '';
-      bestBox.style.display = 'none';
-      rawOut.value = '';
-      candidates = [];
-      best = null;
-    }
-
-    function renderCandidates(){
-      if(!candidates.length){
-        many.innerHTML = '<p class="muted" style="margin:0">No tracking numbers captured yet.</p>';
-        many.style.display = '';
-        return;
-      }
-      // score and pick best
-      const scored = candidates.map(n => ({n, score: score(n)})).sort((a,b)=>b.score-a.score);
-      best = scored[0].n;
-
-      bestNum.textContent = human(best);
-      bestBox.style.display = '';
-
-      if(candidates.length > 1){
-        many.style.display = 'grid';
-        many.innerHTML = '';
-        candidates.forEach((n, i) => {
-          const b = document.createElement('button');
-          b.className = 'card';
-          b.textContent = human(n);
-          b.onclick = () => openUSPS(n);
-          many.appendChild(b);
-        });
-      } else {
-        many.style.display = 'none';
       }
     }
 
@@ -242,17 +332,65 @@
       return t;
     }
 
-    async function downscale(src, maxDim = 1800){
-      const img = await loadImage(src);
-      const {w,h} = fit(img.naturalWidth, img.naturalHeight, maxDim);
+    function cropFromCanvas(){
       const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      const ctx = c.getContext('2d');
-      ctx.drawImage(img,0,0,w,h);
+      c.width = Math.round(cropRect.w);
+      c.height = Math.round(cropRect.h);
+      const cctx = c.getContext('2d');
+      cctx.drawImage(canvas,
+        Math.round(cropRect.x), Math.round(cropRect.y), Math.round(cropRect.w), Math.round(cropRect.h),
+        0, 0, Math.round(cropRect.w), Math.round(cropRect.h)
+      );
       return c;
     }
-    function fit(w,h,max){ const s = Math.min(1, max/Math.max(w,h)); return {w:Math.round(w*s), h:Math.round(h*s)}; }
-    function loadImage(url){ return new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=url; }); }
+
+    function makeDownscaledCanvas(img, maxDim=1800){
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(img, 0, 0, w, h);
+      return c;
+    }
+
+    function resetUI(){
+      err.style.display = 'none';
+      many.innerHTML = '';
+      bestBox.style.display = 'none';
+      rawOut.value = '';
+      candidates = [];
+      best = null;
+      cropRect = null;
+      if (typeof drawCanvas === 'function') drawCanvas();
+    }
+
+    function renderCandidates(){
+      if(!candidates.length){
+        many.innerHTML = '<p class="muted" style="margin:0">No tracking numbers captured yet.</p>';
+        many.style.display = '';
+        return;
+      }
+      const scored = candidates.map(n => ({n, score: score(n)})).sort((a,b)=>b.score-a.score);
+      best = scored[0].n;
+
+      bestNum.textContent = human(best);
+      bestBox.style.display = '';
+
+      if(candidates.length > 1){
+        many.style.display = 'grid';
+        many.innerHTML = '';
+        candidates.forEach((n, i) => {
+          const b = document.createElement('button');
+          b.className = 'card';
+          b.textContent = human(n);
+          b.onclick = () => openUSPS(n);
+          many.appendChild(b);
+        });
+      } else {
+        many.style.display = 'none';
+      }
+    }
   </script>
 </body>
 </html>
