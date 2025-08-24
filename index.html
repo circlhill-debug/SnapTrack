@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SnapTrack — USPS OCR</title>
+  <style>
+    :root{--ink:#111;--muted:#6b7280;--line:#e5e7eb;--bg:#f8fafc}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial}
+    .wrap{max-width:720px;margin:0 auto;padding:20px}
+    h1{font-size:1.75rem;margin:0 0 .25rem}
+    p{margin:.25rem 0}
+    .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    button{cursor:pointer;border:1px solid #d1d5db;background:#fff;padding:10px 14px;border-radius:12px}
+    button.primary{background:#111;color:#fff;border-color:#111}
+    button:active{transform:scale(.99)}
+    .muted{color:var(--muted)}
+    .grid{display:grid;gap:16px}
+    .img{width:100%;border:1px solid var(--line);border-radius:12px}
+    .bar{height:8px;border-radius:999px;background:#eef2f7;overflow:hidden}
+    .bar>div{height:100%;background:#111;width:0%}
+    textarea{width:100%;height:150px;border:1px solid var(--line);border-radius:12px;padding:10px;background:#f7f7f8;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:.9rem}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .pill{display:inline-block;font-size:.75rem;padding:.25rem .5rem;border-radius:999px;border:1px solid #d1d5db}
+    label.switch{display:flex;align-items:center;gap:.5rem;font-size:.9rem}
+    .list > button{width:100%;text-align:left}
+    .good{background:#ecfdf5;border-color:#a7f3d0}
+    .bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header style="margin-bottom:16px">
+      <h1>SnapTrack — USPS OCR</h1>
+      <p class="muted">Snap a USPS label, I’ll read the tracking number, then open the official USPS tracking page.</p>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+          <div>
+            <h3 style="margin:.25rem 0">1) Take or upload a photo</h3>
+            <p class="muted" style="margin:0">Use the rear camera in good light, fill the frame with the label.</p>
+          </div>
+          <button id="pickBtn">Snap / Upload</button>
+        </div>
+        <input id="file" type="file" accept="image/*" capture="environment" style="display:none" />
+        <div id="previewWrap" style="margin-top:12px;display:none">
+          <img id="preview" class="img" alt="label preview" />
+        </div>
+        <div id="progWrap" style="margin-top:12px;display:none">
+          <div class="muted" style="font-weight:600;margin-bottom:6px">
+            Reading text… <span id="pct">0</span>%
+          </div>
+          <div class="bar"><div id="bar"></div></div>
+        </div>
+        <div id="err" class="card bad" style="margin-top:12px;display:none"></div>
+      </section>
+
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+          <div>
+            <h3 style="margin:.25rem 0">2) Candidates found</h3>
+            <p class="muted" style="margin:0">Tap a number to open USPS in a new tab.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="autoOpen" checked />
+            <span class="pill">Auto-open if only one</span>
+          </label>
+        </div>
+        <div id="best" class="card good" style="margin-top:12px;display:none">
+          <div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;margin-bottom:4px">Best match</div>
+          <div id="bestNum" class="mono" style="font-size:1.15rem;word-break:break-all"></div>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="primary" id="openBest">Open on USPS</button>
+            <button id="copyBest">Copy</button>
+          </div>
+        </div>
+        <div id="many" class="list" style="margin-top:12px;display:grid;gap:8px"></div>
+      </section>
+
+      <section class="card">
+        <h3 style="margin:.25rem 0">3) Raw OCR (troubleshooting)</h3>
+        <p class="muted" style="margin:0 0 6px">If this looks messy, try another angle or more light.</p>
+        <textarea id="raw" readonly></textarea>
+      </section>
+
+      <section class="muted" style="font-size:.9rem">
+        <p><strong>Tips:</strong> Avoid glare; tilt slightly if needed. Everything runs locally in your browser—no images are uploaded.</p>
+      </section>
+    </div>
+  </div>
+
+  <!-- Tesseract.js OCR (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script>
+    const fileInput = document.getElementById('file');
+    const pickBtn = document.getElementById('pickBtn');
+    const previewWrap = document.getElementById('previewWrap');
+    const preview = document.getElementById('preview');
+    const progWrap = document.getElementById('progWrap');
+    const pct = document.getElementById('pct');
+    const bar = document.getElementById('bar');
+    const err = document.getElementById('err');
+    const rawOut = document.getElementById('raw');
+    const many = document.getElementById('many');
+    const bestBox = document.getElementById('best');
+    const bestNum = document.getElementById('bestNum');
+    const openBest = document.getElementById('openBest');
+    const copyBest = document.getElementById('copyBest');
+    const autoOpen = document.getElementById('autoOpen');
+
+    let candidates = [];
+    let best = null;
+
+    pickBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', onFile);
+
+    openBest.addEventListener('click', () => { if (best) openUSPS(best); });
+    copyBest.addEventListener('click', async () => { if (best) await navigator.clipboard.writeText(best); });
+
+    async function onFile(e){
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      resetUI();
+
+      const url = URL.createObjectURL(f);
+      preview.src = url;
+      previewWrap.style.display = '';
+
+      try {
+        progWrap.style.display = '';
+        pct.textContent = '0'; bar.style.width = '0%';
+
+        const src = await downscale(url, 1800);
+        const res = await Tesseract.recognize(src, 'eng', {
+          logger: m => {
+            if(m.status === 'recognizing text' && typeof m.progress === 'number') {
+              const p = Math.round(m.progress*100);
+              pct.textContent = String(p);
+              bar.style.width = p + '%';
+            }
+          }
+        });
+
+        const text = (res.data.text || '');
+        rawOut.value = text;
+
+        candidates = extractUsps(text);
+        renderCandidates();
+
+        if(candidates.length === 1 && autoOpen.checked){
+          openUSPS(candidates[0]);
+        }
+      } catch(ex){
+        err.textContent = 'OCR stumbled. Try a brighter, sharper photo that fills the label.';
+        err.style.display = '';
+      } finally {
+        progWrap.style.display = 'none';
+      }
+    }
+
+    function resetUI(){
+      err.style.display = 'none';
+      many.innerHTML = '';
+      bestBox.style.display = 'none';
+      rawOut.value = '';
+      candidates = [];
+      best = null;
+    }
+
+    function renderCandidates(){
+      if(!candidates.length){
+        many.innerHTML = '<p class="muted" style="margin:0">No tracking numbers captured yet.</p>';
+        many.style.display = '';
+        return;
+      }
+      // score and pick best
+      const scored = candidates.map(n => ({n, score: score(n)})).sort((a,b)=>b.score-a.score);
+      best = scored[0].n;
+
+      bestNum.textContent = human(best);
+      bestBox.style.display = '';
+
+      if(candidates.length > 1){
+        many.style.display = 'grid';
+        many.innerHTML = '';
+        candidates.forEach((n, i) => {
+          const b = document.createElement('button');
+          b.className = 'card';
+          b.textContent = human(n);
+          b.onclick = () => openUSPS(n);
+          many.appendChild(b);
+        });
+      } else {
+        many.style.display = 'none';
+      }
+    }
+
+    // USPS helpers
+    function openUSPS(n){
+      const url = new URL('https://tools.usps.com/go/TrackConfirmAction');
+      url.searchParams.set('tLabels', n);
+      window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    }
+
+    function human(n){
+      if (/^[A-Z]{2}\d{9}US$/i.test(n)) return n.toUpperCase();
+      return n.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
+    }
+
+    function score(n){
+      let s = 0; const L = n.length;
+      if (L === 22) s += 6;
+      else if (L === 20) s += 5;
+      else if (L >= 26 && L <= 34) s += 2;
+      if (/^(92|93|94)/.test(n)) s += 3;
+      if (/^[A-Z]{2}\d{9}US$/i.test(n)) s += 7;
+      return s;
+    }
+
+    function extractUsps(text){
+      const cleaned = normalize(text);
+      const intl = Array.from(cleaned.matchAll(/\b([A-Z]{2})\s*(\d{3})\s*(\d{3})\s*(\d{3})\s*(US)\b/gi))
+        .map(m => (m[1] + m[2] + m[3] + m[4] + m[5]).toUpperCase());
+      const longNums = Array.from(cleaned.matchAll(/((?:\d[\s-]?){20,34})/g))
+        .map(m => m[0].replace(/[\s-]/g,''))
+        .filter(n => [20,22,26,30,34].includes(n.length));
+      const seen = new Set(), out = [];
+      [...intl, ...longNums].forEach(n => { if(!seen.has(n)){ seen.add(n); out.push(n); }});
+      return out;
+    }
+
+    function normalize(text){
+      let t = (text || '').toUpperCase();
+      t = t.replace(/(?<=\d|\s)O(?=\d|\s)/g,'0'); // O->0
+      t = t.replace(/(?<=\d|\s)[IL](?=\d|\s)/g,'1'); // I/l->1
+      t = t.replace(/(?<=\d|\s)S(?=\d|\s)/g,'5'); // S->5
+      t = t.replace(/(?<=\d|\s)B(?=\d|\s)/g,'8'); // B->8
+      t = t.replace(/(?<=\d|\s)Z(?=\d|\s)/g,'2'); // Z->2
+      return t;
+    }
+
+    async function downscale(src, maxDim = 1800){
+      const img = await loadImage(src);
+      const {w,h} = fit(img.naturalWidth, img.naturalHeight, maxDim);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      return c;
+    }
+    function fit(w,h,max){ const s = Math.min(1, max/Math.max(w,h)); return {w:Math.round(w*s), h:Math.round(h*s)}; }
+    function loadImage(url){ return new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=rej; i.src=url; }); }
+  </script>
+</body>
+</html>
