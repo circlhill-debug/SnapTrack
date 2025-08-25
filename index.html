@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SnapTrack — USPS OCR</title>
 
-  <!-- CSP: allows inline script + jsDelivr (safe for our single‑file app) -->
+  <!-- CSP: allow inline script + jsDelivr (single-file app) -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
                  img-src 'self' blob:;
@@ -44,7 +44,7 @@
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Snap or upload a USPS label. A crop box appears immediately—drag inside to move, drag corners/edges to resize, then tap <em>Use crop</em>.</p>
+      <p class="muted">Snap or upload a USPS label. Crop appears immediately—drag inside to move, drag corners/edges to resize, then tap <em>Use crop</em>.</p>
     </header>
 
     <div class="grid">
@@ -132,7 +132,7 @@
       </section>
 
       <footer>
-        © 2025 Dave — SnapTrack v1.7 • Built for USPS label OCR
+        © 2025 Dave — SnapTrack v1.8 • Built for USPS label OCR
       </footer>
     </div>
   </div>
@@ -140,7 +140,7 @@
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
     // Version
-    const SNAPTRACK_VERSION = "v1.7 (2025-08-25)";
+    const SNAPTRACK_VERSION = "v1.8 (2025-08-25)";
 
     // Elements
     const fileSnap   = document.getElementById('fileSnap');
@@ -370,11 +370,11 @@
       // corner handles
       for (const h of handlePositions(r)) {
         if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) {
-          return h.name; // 'nw','n','ne','e','se','s','sw','w' (corners use nw/ne/se/sw)
+          return h.name; // 'nw','n','ne','e','se','s','sw','w'
         }
       }
 
-      // edge zones (exclude the corner squares)
+      // edge zones (exclude corner squares)
       const leftZone   = (p.x >= r.x - EDGE_HIT && p.x <= r.x + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
       const rightZone  = (p.x >= r.x + r.w - EDGE_HIT && p.x <= r.x + r.w + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
       const topZone    = (p.y >= r.y - EDGE_HIT && p.y <= r.y + EDGE_HIT && p.x >= r.x + HANDLE/2 && p.x <= r.x + r.w - HANDLE/2);
@@ -386,7 +386,6 @@
 
       // inside rect → move
       if (pointInRect(p, r)) return 'move';
-
       return null;
     }
 
@@ -425,7 +424,54 @@
 
     function validCrop(){ return cropRect && cropRect.w >= MIN_W && cropRect.h >= MIN_H; }
 
-    // OCR
+    // ---- OCR helpers: always-on thresholding for high contrast ----
+    const THRESHOLD = 128; // tweak 110–160 if needed
+
+    function applyThresholdToCanvas(c){
+      const cctx = c.getContext('2d');
+      const imgData = cctx.getImageData(0, 0, c.width, c.height);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i+1], b = d[i+2];
+        const gray = 0.299*r + 0.587*g + 0.114*b; // luminance
+        const bw = gray > THRESHOLD ? 255 : 0;
+        d[i] = d[i+1] = d[i+2] = bw;
+      }
+      cctx.putImageData(imgData, 0, 0);
+    }
+
+    // Crop mapped to ORIGINAL image + threshold
+    function cropFromCanvas(){
+      const srcX = Math.max(0, Math.round(cropRect.x / displayScale));
+      const srcY = Math.max(0, Math.round(cropRect.y / displayScale));
+      const srcW = Math.max(1, Math.round(cropRect.w / displayScale));
+      const srcH = Math.max(1, Math.round(cropRect.h / displayScale));
+
+      const c = document.createElement('canvas');
+      c.width = srcW;
+      c.height = srcH;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(originalImg, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+
+      applyThresholdToCanvas(c);
+      return c;
+    }
+
+    // Full image downscale + threshold
+    function makeDownscaledCanvas(img, maxDim=1800){
+      const w0 = img.naturalWidth, h0 = img.naturalHeight;
+      const scale = Math.min(1, maxDim / Math.max(w0, h0));
+      const w = Math.round(w0 * scale), h = Math.round(h0 * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(img, 0, 0, w, h);
+
+      applyThresholdToCanvas(c);
+      return c;
+    }
+
+    // OCR runner
     async function ocrCanvas(srcCanvas){
       try {
         err.style.display = 'none';
@@ -501,29 +547,6 @@
       return t;
     }
 
-    function cropFromCanvas(){
-      const c = document.createElement('canvas');
-      c.width = Math.round(cropRect.w);
-      c.height = Math.round(cropRect.h);
-      const cctx = c.getContext('2d');
-      cctx.drawImage(canvas,
-        Math.round(cropRect.x), Math.round(cropRect.y), Math.round(cropRect.w), Math.round(cropRect.h),
-        0, 0, Math.round(cropRect.w), Math.round(cropRect.h)
-      );
-      return c;
-    }
-
-    function makeDownscaledCanvas(img, maxDim=1800){
-      const w0 = img.naturalWidth, h0 = img.naturalHeight;
-      const scale = Math.min(1, maxDim / Math.max(w0, h0));
-      const w = Math.round(w0 * scale), h = Math.round(h0 * scale);
-      const c = document.createElement('canvas');
-      c.width = w; c.height = h;
-      const cctx = c.getContext('2d');
-      cctx.drawImage(img, 0, 0, w, h);
-      return c;
-    }
-
     function resetUI(){
       err.style.display = 'none';
       many.innerHTML = '';
@@ -572,11 +595,10 @@
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
-  in the
-  Software without restriction, including without limitation the rights to use,
-  copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-  the Software, and to permit persons to whom the Software is furnished to do
-  so, subject to the following conditions:
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
 
   The above copyright notice and this permission notice shall be included in
   all copies or substantial portions of the Software.
