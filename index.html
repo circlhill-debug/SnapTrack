@@ -5,15 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SnapTrack — USPS OCR</title>
 
-  <!-- CSP: allow inline script + jsDelivr (single-file app) -->
-  <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self';
-                 img-src 'self' blob:;
-                 script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
-                 connect-src 'self';
-                 style-src 'self' 'unsafe-inline';
-                 frame-ancestors 'none'">
-
   <style>
     :root{--ink:#111;--muted:#6b7280;--line:#e5e7eb;--bg:#f8fafc}
     *{box-sizing:border-box}
@@ -132,7 +123,7 @@
       </section>
 
       <footer>
-        © 2025 Dave — SnapTrack v1.8 • Built for USPS label OCR
+        © 2025 Dave — SnapTrack v1.9 • Built for USPS label OCR
       </footer>
     </div>
   </div>
@@ -140,7 +131,7 @@
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
     // Version
-    const SNAPTRACK_VERSION = "v1.8 (2025-08-25)";
+    const SNAPTRACK_VERSION = "v1.9 (2025-08-25)";
 
     // Elements
     const fileSnap   = document.getElementById('fileSnap');
@@ -425,15 +416,15 @@
     function validCrop(){ return cropRect && cropRect.w >= MIN_W && cropRect.h >= MIN_H; }
 
     // ---- OCR helpers: always-on thresholding for high contrast ----
-    const THRESHOLD = 128; // tweak 110–160 if needed
+    const THRESHOLD = 128; // tweak 110–150 if needed
 
     function applyThresholdToCanvas(c){
-      const cctx = c.getContext('2d');
+      const cctx = c.getContext('2d', { willReadFrequently: true });
       const imgData = cctx.getImageData(0, 0, c.width, c.height);
       const d = imgData.data;
       for (let i = 0; i < d.length; i += 4) {
         const r = d[i], g = d[i+1], b = d[i+2];
-        const gray = 0.299*r + 0.587*g + 0.114*b; // luminance
+        const gray = 0.299*r + 0.587*g + 0.114*b;
         const bw = gray > THRESHOLD ? 255 : 0;
         d[i] = d[i+1] = d[i+2] = bw;
       }
@@ -496,6 +487,7 @@
 
         if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
       } catch(ex){
+        console.error('Tesseract error:', ex);
         err.textContent = 'OCR stumbled. Try a brighter, sharper photo that fills the label.';
         err.style.display = '';
       } finally {
