@@ -14,6 +14,7 @@
     .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
     button{cursor:pointer;border:1px solid #d1d5db;background:#fff;padding:10px 14px;border-radius:12px}
     button.primary{background:#111;color:#fff;border-color:#111}
+    button.ghost{background:transparent}
     button:active{transform:scale(.99)}
     .muted{color:var(--muted)}
     .grid{display:grid;gap:16px}
@@ -27,13 +28,14 @@
     .list > button{width:100%;text-align:left}
     .good{background:#ecfdf5;border-color:#a7f3d0}
     .bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+    a.tiny{font-size:.85rem;text-decoration:underline;color:#374151}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Snap or upload a USPS label, crop if needed, I’ll read the tracking number, then open the official USPS tracking page.</p>
+      <p class="muted">Snap or upload a USPS label. A white crop box will appear—drag it quickly, tap <em>Use crop</em>, and I’ll open USPS tracking.</p>
     </header>
 
     <div class="grid">
@@ -42,7 +44,7 @@
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
           <div>
             <h3 style="margin:.25rem 0">1) Take or upload a photo</h3>
-            <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Or upload and crop first.</p>
+            <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Upload if you want to crop first.</p>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button id="snapBtn">Snap (Camera)</button>
@@ -50,17 +52,17 @@
           </div>
         </div>
 
-        <!-- Two inputs: camera + photo library -->
         <input id="fileSnap"   type="file" accept="image/*" capture="environment" style="display:none" />
         <input id="fileUpload" type="file" accept="image/*" style="display:none" />
 
-        <!-- Preview + Crop UI -->
+        <!-- Preview + Instant Crop UI -->
         <div id="previewWrap" style="margin-top:12px;display:none">
           <canvas id="canvas" class="img" style="touch-action:none"></canvas>
-          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap">
-            <button id="ocrSelection" class="primary">OCR selection</button>
-            <button id="ocrFull">OCR whole image</button>
-            <span class="muted" style="font-size:.9rem">Tip: drag to draw a box; drag again to re-draw.</span>
+          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
+            <button id="useCrop" class="primary">Use crop</button>
+            <button id="useFull">Use full image</button>
+            <a href="#" id="resetCrop" class="tiny">Reset crop</a>
+            <span class="muted" style="font-size:.9rem">Tip: drag anywhere on the image to redraw the box.</span>
           </div>
         </div>
 
@@ -98,7 +100,6 @@
 
         <div id="many" class="list" style="margin-top:12px;display:grid;gap:8px"></div>
 
-        <!-- Manual Paste Box (safety net) -->
         <div class="card" style="margin-top:12px">
           <h4 style="margin:.25rem 0">Manual (paste or edit)</h4>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -106,7 +107,7 @@
                    style="flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:10px" />
             <button id="openManual" class="primary">Open on USPS</button>
           </div>
-          <p class="muted" style="margin:.5rem 0 0">Tip: copy from “Raw OCR” and paste here if needed.</p>
+          <p class="muted" style="margin:.5rem 0 0">Tip: copy from “Raw OCR” if needed.</p>
         </div>
       </section>
 
@@ -118,12 +119,11 @@
       </section>
 
       <section class="muted" style="font-size:.9rem">
-        <p><strong>Tips:</strong> Avoid glare; tilt slightly if needed. Everything runs locally in your browser—no images are uploaded.</p>
+        <p><strong>Tips:</strong> Avoid glare; tilt slightly if needed. Everything runs locally—no images are uploaded.</p>
       </section>
     </div>
   </div>
 
-  <!-- Tesseract.js OCR (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
     // Elements
@@ -149,8 +149,9 @@
     const copyBest   = document.getElementById('copyBest');
     const autoOpen   = document.getElementById('autoOpen');
 
-    const ocrSelectionBtn = document.getElementById('ocrSelection');
-    const ocrFullBtn      = document.getElementById('ocrFull');
+    const useCropBtn = document.getElementById('useCrop');
+    const useFullBtn = document.getElementById('useFull');
+    const resetCrop  = document.getElementById('resetCrop');
 
     const manualInput = document.getElementById('manualInput');
     const openManual  = document.getElementById('openManual');
@@ -164,11 +165,27 @@
     let cropRect = null;     // {x,y,w,h} in canvas coords
     let isDragging = false;
 
-    // UI events
+    // Events
     snapBtn.addEventListener('click',   () => fileSnap.click());
     uploadBtn.addEventListener('click', () => fileUpload.click());
     fileSnap.addEventListener('change', onFile);
     fileUpload.addEventListener('change', onFile);
+
+    useCropBtn.addEventListener('click', async () => {
+      if (!originalImg) return;
+      const region = validCrop() ? cropFromCanvas() : makeDownscaledCanvas(originalImg);
+      await ocrCanvas(region);
+    });
+    useFullBtn.addEventListener('click', async () => {
+      if (!originalImg) return;
+      await ocrCanvas(makeDownscaledCanvas(originalImg));
+    });
+    resetCrop.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (!originalImg) return;
+      setDefaultCrop();
+      drawCanvas();
+    });
 
     openBest.addEventListener('click', () => { if (best) openUSPS(best); });
     copyBest.addEventListener('click', async () => { if (best) await navigator.clipboard.writeText(best); });
@@ -179,21 +196,6 @@
       const cleaned = /^[A-Z]{2}\d{9}US$/i.test(val) ? val : val.replace(/\D+/g,'');
       if (!cleaned) return;
       openUSPS(cleaned);
-    });
-
-    ocrSelectionBtn.addEventListener('click', async () => {
-      if (!originalImg) return;
-      if (!cropRect || cropRect.w < 10 || cropRect.h < 10) {
-        await ocrCanvas(makeDownscaledCanvas(originalImg));
-        return;
-      }
-      const cropped = cropFromCanvas();
-      await ocrCanvas(cropped);
-    });
-
-    ocrFullBtn.addEventListener('click', async () => {
-      if (!originalImg) return;
-      await ocrCanvas(makeDownscaledCanvas(originalImg));
     });
 
     // File handling
@@ -207,7 +209,6 @@
         originalImg = await createImageBitmap(await fetch(url).then(r=>r.blob()));
         setupCanvasForImage(originalImg);
         previewWrap.style.display = '';
-        // No immediate OCR—user can crop first.
       } catch(ex){
         err.textContent = 'Could not load image. Try another photo.';
         err.style.display = '';
@@ -216,6 +217,7 @@
       }
     }
 
+    // Canvas / crop
     function setupCanvasForImage(img) {
       const maxW = Math.min(1200, Math.max(360, Math.floor(window.innerWidth - 40)));
       const scale = Math.min(1, maxW / img.width);
@@ -223,9 +225,20 @@
       canvas.height = Math.round(img.height * scale);
       displayScale = scale;
 
-      cropRect = null;
+      setDefaultCrop();
       drawCanvas();
       attachCropEvents();
+    }
+
+    function setDefaultCrop(){
+      // Default to a central horizontal strip (good for tracking lines):
+      const w = Math.round(canvas.width * 0.92);
+      const h = Math.round(canvas.height * 0.28);
+      cropRect = {
+        x: Math.round((canvas.width - w) / 2),
+        y: Math.round((canvas.height - h) / 2),
+        w, h
+      };
     }
 
     function drawCanvas() {
@@ -233,14 +246,40 @@
       if (!originalImg) return;
       ctx.drawImage(originalImg, 0, 0, originalImg.width*displayScale, originalImg.height*displayScale);
 
+      // Dim overlay + white crop box
       if (cropRect) {
         ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,.25)';
+        ctx.fillStyle = 'rgba(0,0,0,.35)';
         ctx.fillRect(0,0,canvas.width,canvas.height);
         ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-        ctx.strokeStyle = '#111';
-        ctx.lineWidth = 2;
+
+        // White border
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.lineWidth = 3;
         ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+
+        // Small white corner ticks (visual affordance)
+        const t = 14;
+        ctx.lineWidth = 3;
+        // TL
+        ctx.beginPath();
+        ctx.moveTo(cropRect.x, cropRect.y + t); ctx.lineTo(cropRect.x, cropRect.y);
+        ctx.lineTo(cropRect.x + t, cropRect.y); ctx.stroke();
+        // TR
+        ctx.beginPath();
+        ctx.moveTo(cropRect.x + cropRect.w - t, cropRect.y); ctx.lineTo(cropRect.x + cropRect.w, cropRect.y);
+        ctx.lineTo(cropRect.x + cropRect.w, cropRect.y + t); ctx.stroke();
+        // BL
+        ctx.beginPath();
+        ctx.moveTo(cropRect.x, cropRect.y + cropRect.h - t); ctx.lineTo(cropRect.x, cropRect.y + cropRect.h);
+        ctx.lineTo(cropRect.x + t, cropRect.y + cropRect.h); ctx.stroke();
+        // BR
+        ctx.beginPath();
+        ctx.moveTo(cropRect.x + cropRect.w - t, cropRect.y + cropRect.h);
+        ctx.lineTo(cropRect.x + cropRect.w, cropRect.y + cropRect.h);
+        ctx.lineTo(cropRect.x + cropRect.w, cropRect.y + cropRect.h - t);
+        ctx.stroke();
+
         ctx.restore();
       }
     }
@@ -251,6 +290,7 @@
         cropRect = { x, y, w: 0, h: 0 };
         isDragging = true;
         canvas.setPointerCapture(ev.pointerId);
+        drawCanvas();
       };
       canvas.onpointermove = (ev) => {
         if (!isDragging || !cropRect) return;
@@ -276,7 +316,9 @@
                y: Math.max(0, Math.min(canvas.height, y)) };
     }
 
-    // OCR runner
+    function validCrop(){ return cropRect && cropRect.w >= 10 && cropRect.h >= 10; }
+
+    // OCR
     async function ocrCanvas(srcCanvas){
       try {
         err.style.display = 'none';
@@ -308,7 +350,7 @@
       }
     }
 
-    // USPS helpers + extractor
+    // USPS + extraction (same logic as before)
     function openUSPS(n){
       const url = new URL('https://tools.usps.com/go/TrackConfirmAction');
       url.searchParams.set('tLabels', n);
@@ -344,11 +386,11 @@
 
     function normalize(text){
       let t = (text || '').toUpperCase();
-      t = t.replace(/(?<=\d|\s)O(?=\d|\s)/g,'0'); // O->0
-      t = t.replace(/(?<=\d|\s)[IL](?=\d|\s)/g,'1'); // I/l->1
-      t = t.replace(/(?<=\d|\s)S(?=\d|\s)/g,'5'); // S->5
-      t = t.replace(/(?<=\d|\s)B(?=\d|\s)/g,'8'); // B->8
-      t = t.replace(/(?<=\d|\s)Z(?=\d|\s)/g,'2'); // Z->2
+      t = t.replace(/(?<=\d|\s)O(?=\d|\s)/g,'0');
+      t = t.replace(/(?<=\d|\s)[IL](?=\d|\s)/g,'1');
+      t = t.replace(/(?<=\d|\s)S(?=\d|\s)/g,'5');
+      t = t.replace(/(?<=\d|\s)B(?=\d|\s)/g,'8');
+      t = t.replace(/(?<=\d|\s)Z(?=\d|\s)/g,'2');
       return t;
     }
 
@@ -396,8 +438,6 @@
 
       bestNum.textContent = human(best);
       bestBox.style.display = '';
-
-      // Prefill manual box with best match for easy edits
       manualInput.value = best;
 
       if(candidates.length > 1){
