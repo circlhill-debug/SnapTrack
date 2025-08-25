@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SnapTrack — USPS OCR</title>
 
-  <!-- CSP (allows our inline script + jsDelivr). If you later externalize JS, you can remove 'unsafe-inline'. -->
+  <!-- CSP: allows inline script + jsDelivr (safe for our single‑file app) -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
                  img-src 'self' blob:;
@@ -44,7 +44,7 @@
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Snap or upload a USPS label. A crop box appears immediately—drag it, resize corners/edges, then tap <em>Use crop</em>.</p>
+      <p class="muted">Snap or upload a USPS label. A crop box appears immediately—drag inside to move, drag corners/edges to resize, then tap <em>Use crop</em>.</p>
     </header>
 
     <div class="grid">
@@ -132,7 +132,7 @@
       </section>
 
       <footer>
-        © 2025 Dave — SnapTrack v1.6 • Built for USPS label OCR
+        © 2025 Dave — SnapTrack v1.7 • Built for USPS label OCR
       </footer>
     </div>
   </div>
@@ -140,7 +140,7 @@
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
     // Version
-    const SNAPTRACK_VERSION = "v1.6 (2025-08-25)";
+    const SNAPTRACK_VERSION = "v1.7 (2025-08-25)";
 
     // Elements
     const fileSnap   = document.getElementById('fileSnap');
@@ -172,7 +172,8 @@
     const openManual  = document.getElementById('openManual');
 
     // --- Crop/drag constants & state ---
-    const HANDLE = 16;
+    const HANDLE = 28;          // bigger touch targets
+    const EDGE_HIT = 18;        // edge resize zone thickness
     const MIN_W = 20, MIN_H = 20;
 
     let candidates = [];
@@ -183,7 +184,7 @@
     let cropRect = null;               // {x,y,w,h}
     let isDragging = false;
 
-    let dragMode = null;               // 'move' | corner/edge | null
+    let dragMode = null;               // 'move' | 'nw'|'ne'|'se'|'sw'|'n'|'s'|'w'|'e' | null
     let dragStart = null;              // {x,y}
     let startRect = null;              // snapshot of rect
 
@@ -214,7 +215,7 @@
       openUSPS(cleaned);
     });
 
-    // File handling (fix: robust Image() loader instead of createImageBitmap)
+    // File handling (robust loader)
     async function onFile(e){
       const f = e.target.files && e.target.files[0];
       if(!f) return;
@@ -222,7 +223,7 @@
 
       const url = URL.createObjectURL(f);
       try {
-        originalImg = await loadImage(url);   // <-- FIXED loader
+        originalImg = await loadImage(url);
         setupCanvasForImage(originalImg);
         previewWrap.style.display = '';
       } catch(ex){
@@ -242,7 +243,7 @@
       });
     }
 
-    // Canvas / crop
+    // Canvas / crop setup
     function setupCanvasForImage(img) {
       const maxW = Math.min(1200, Math.max(360, Math.floor(window.innerWidth - 40)));
       const scale = Math.min(1, maxW / img.naturalWidth);
@@ -265,7 +266,7 @@
       };
     }
 
-    // OUTLINE + HANDLE rendering
+    // Rendering (outline + visible handles)
     function drawCanvas() {
       ctx.clearRect(0,0,canvas.width,canvas.height);
       if (!originalImg) return;
@@ -274,7 +275,7 @@
 
       if (cropRect) {
         ctx.save();
-        // double-stroke outline (dark under, white on top)
+        // double-stroke outline
         ctx.strokeStyle = 'rgba(0,0,0,0.9)';
         ctx.lineWidth = 5;
         ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
@@ -282,13 +283,13 @@
         ctx.lineWidth = 3;
         ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
 
-        // handles
+        // bigger handles for touch
         const handles = handlePositions(cropRect);
         for (const h of handles) {
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
           ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2.5;
           ctx.strokeRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
         }
         ctx.restore();
@@ -309,6 +310,7 @@
       ];
     }
 
+    // Interaction (move + resize via handles OR edges) — no auto-reset
     function attachCropEvents(){
       canvas.onpointerdown = (ev) => {
         ev.preventDefault();
@@ -318,16 +320,14 @@
 
         const hit = hitTest(p, cropRect);
         if (hit) {
-          dragMode = hit;         // 'move' or a handle name
+          dragMode = hit; // 'move' or handle/edge name
+          isDragging = true;
+          canvas.setPointerCapture(ev.pointerId);
         } else {
-          // Keep current rect (no auto-reset)
+          // keep current rect; do nothing
           dragMode = null;
           isDragging = false;
-          return;
         }
-
-        isDragging = true;
-        canvas.setPointerCapture(ev.pointerId);
         drawCanvas();
       };
 
@@ -363,14 +363,30 @@
       };
     }
 
+    // Touch-friendly hit-test: corners first, then edges, then move
     function hitTest(p, r){
       if (!r) return null;
-      // handles first
+
+      // corner handles
       for (const h of handlePositions(r)) {
-        if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) return h.name;
+        if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) {
+          return h.name; // 'nw','n','ne','e','se','s','sw','w' (corners use nw/ne/se/sw)
+        }
       }
-      // inside rect
+
+      // edge zones (exclude the corner squares)
+      const leftZone   = (p.x >= r.x - EDGE_HIT && p.x <= r.x + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
+      const rightZone  = (p.x >= r.x + r.w - EDGE_HIT && p.x <= r.x + r.w + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
+      const topZone    = (p.y >= r.y - EDGE_HIT && p.y <= r.y + EDGE_HIT && p.x >= r.x + HANDLE/2 && p.x <= r.x + r.w - HANDLE/2);
+      const bottomZone = (p.y >= r.y + r.h - EDGE_HIT && p.y <= r.y + r.h + EDGE_HIT && p.x >= r.x + HANDLE/2 && p.x <= r.x + r.w - HANDLE/2);
+      if (leftZone)   return 'w';
+      if (rightZone)  return 'e';
+      if (topZone)    return 'n';
+      if (bottomZone) return 's';
+
+      // inside rect → move
       if (pointInRect(p, r)) return 'move';
+
       return null;
     }
 
@@ -519,19 +535,48 @@
       dragMode = null;
       drawCanvas();
     }
+
+    function renderCandidates(){
+      if(!candidates.length){
+        many.innerHTML = '<p class="muted" style="margin:0">No tracking numbers captured yet.</p>';
+        many.style.display = '';
+        return;
+      }
+      const scored = candidates.map(n => ({n, score: score(n)})).sort((a,b)=>b.score-a.score);
+      best = scored[0].n;
+
+      bestNum.textContent = human(best);
+      bestBox.style.display = '';
+      manualInput.value = best;
+
+      if(candidates.length > 1){
+        many.style.display = 'grid';
+        many.innerHTML = '';
+        candidates.forEach((n) => {
+          const b = document.createElement('button');
+          b.className = 'card';
+          b.textContent = human(n);
+          b.onclick = () => openUSPS(n);
+          many.appendChild(b);
+        });
+      } else {
+        many.style.display = 'none';
+      }
+    }
   </script>
 
   <!--
-  MIT License (recommended to also add as a separate LICENSE file in the repo)
+  MIT License (ok to also add as LICENSE file in repo)
 
   Copyright (c) 2025 Dave
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
-  in the Software without restriction, including without limitation the rights
-  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-  copies of the Software, and to permit persons to whom the Software is
-  furnished to do so, subject to the following conditions:
+  in the
+  Software without restriction, including without limitation the rights to use,
+  copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+  the Software, and to permit persons to whom the Software is furnished to do
+  so, subject to the following conditions:
 
   The above copyright notice and this permission notice shall be included in
   all copies or substantial portions of the Software.
