@@ -14,7 +14,6 @@
     .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
     button{cursor:pointer;border:1px solid #d1d5db;background:#fff;padding:10px 14px;border-radius:12px}
     button.primary{background:#111;color:#fff;border-color:#111}
-    button.ghost{background:transparent}
     button:active{transform:scale(.99)}
     .muted{color:var(--muted)}
     .grid{display:grid;gap:16px}
@@ -28,14 +27,13 @@
     .list > button{width:100%;text-align:left}
     .good{background:#ecfdf5;border-color:#a7f3d0}
     .bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
-    a.tiny{font-size:.85rem;text-decoration:underline;color:#374151}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Snap or upload a USPS label. A white crop box will appear—drag it quickly, tap <em>Use crop</em>, and I’ll open USPS tracking.</p>
+      <p class="muted">Snap or upload a USPS label. A crop box appears immediately—drag it, resize corners/edges, then tap <em>Use crop</em>.</p>
     </header>
 
     <div class="grid">
@@ -44,7 +42,7 @@
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
           <div>
             <h3 style="margin:.25rem 0">1) Take or upload a photo</h3>
-            <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Upload if you want to crop first.</p>
+            <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Or upload and crop first.</p>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button id="snapBtn">Snap (Camera)</button>
@@ -55,14 +53,13 @@
         <input id="fileSnap"   type="file" accept="image/*" capture="environment" style="display:none" />
         <input id="fileUpload" type="file" accept="image/*" style="display:none" />
 
-        <!-- Preview + Instant Crop UI -->
+        <!-- Preview + Crop UI -->
         <div id="previewWrap" style="margin-top:12px;display:none">
           <canvas id="canvas" class="img" style="touch-action:none"></canvas>
           <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
             <button id="useCrop" class="primary">Use crop</button>
             <button id="useFull">Use full image</button>
-            <a href="#" id="resetCrop" class="tiny">Reset crop</a>
-            <span class="muted" style="font-size:.9rem">Tip: drag anywhere on the image to redraw the box.</span>
+            <span class="muted" style="font-size:.9rem">Tip: drag inside to move; drag corners/edges to resize; drag outside to start a new box.</span>
           </div>
         </div>
 
@@ -100,6 +97,7 @@
 
         <div id="many" class="list" style="margin-top:12px;display:grid;gap:8px"></div>
 
+        <!-- Manual Paste Box -->
         <div class="card" style="margin-top:12px">
           <h4 style="margin:.25rem 0">Manual (paste or edit)</h4>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -151,19 +149,25 @@
 
     const useCropBtn = document.getElementById('useCrop');
     const useFullBtn = document.getElementById('useFull');
-    const resetCrop  = document.getElementById('resetCrop');
 
     const manualInput = document.getElementById('manualInput');
     const openManual  = document.getElementById('openManual');
 
-    // State
+    // --- Crop/drag constants & state ---
+    const HANDLE = 16;                 // handle square size (px)
+    const MIN_W = 20, MIN_H = 20;
+
     let candidates = [];
     let best = null;
 
-    let originalImg = null;  // ImageBitmap
-    let displayScale = 1;    // canvas pixels per image pixel
-    let cropRect = null;     // {x,y,w,h} in canvas coords
+    let originalImg = null;            // ImageBitmap
+    let displayScale = 1;              // canvas pixels per image pixel
+    let cropRect = null;               // {x,y,w,h}
     let isDragging = false;
+
+    let dragMode = null;               // 'move' | 'nw'|'ne'|'sw'|'se'|'n'|'s'|'w'|'e' | 'new'
+    let dragStart = null;              // {x,y}
+    let startRect = null;              // snapshot of rect at pointer down
 
     // Events
     snapBtn.addEventListener('click',   () => fileSnap.click());
@@ -179,12 +183,6 @@
     useFullBtn.addEventListener('click', async () => {
       if (!originalImg) return;
       await ocrCanvas(makeDownscaledCanvas(originalImg));
-    });
-    resetCrop.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (!originalImg) return;
-      setDefaultCrop();
-      drawCanvas();
     });
 
     openBest.addEventListener('click', () => { if (best) openUSPS(best); });
@@ -231,7 +229,6 @@
     }
 
     function setDefaultCrop(){
-      // Default to a central horizontal strip (good for tracking lines):
       const w = Math.round(canvas.width * 0.92);
       const h = Math.round(canvas.height * 0.28);
       cropRect = {
@@ -241,79 +238,145 @@
       };
     }
 
+    // OUTLINE + HANDLE rendering
     function drawCanvas() {
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (!originalImg) return;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (!originalImg) return;
 
-  // Draw the photo
-  ctx.drawImage(
-    originalImg,
-    0, 0,
-    originalImg.width * displayScale,
-    originalImg.height * displayScale
-  );
+      // Photo
+      ctx.drawImage(originalImg, 0, 0, originalImg.width*displayScale, originalImg.height*displayScale);
 
-  // Draw OUTLINE ONLY (no fill, no overlay)
-  if (cropRect) {
-    ctx.save();
+      if (cropRect) {
+        ctx.save();
+        // double-stroke outline (dark under, white on top)
+        ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+        ctx.lineWidth = 5;
+        ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
 
-    // High-contrast double stroke so it shows on any label
-    // 1) dark under-stroke
-    ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-    ctx.lineWidth = 5;
-    ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+        // handles
+        const handles = handlePositions(cropRect);
+        for (const h of handles) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
+          ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
+        }
+        ctx.restore();
+      }
+    }
 
-    // 2) white outline on top
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-
-    // Corner ticks for better affordance
-    const t = 14;
-    const drawTick = (x1,y1,x2,y2,x3,y3) => {
-      ctx.beginPath();
-      ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.lineTo(x3,y3); ctx.stroke();
-    };
-    // dark ticks under
-    ctx.strokeStyle = 'rgba(0,0,0,0.9)'; ctx.lineWidth = 5;
-    drawTick(cropRect.x, cropRect.y+t, cropRect.x, cropRect.y, cropRect.x+t, cropRect.y);
-    drawTick(cropRect.x+cropRect.w-t, cropRect.y, cropRect.x+cropRect.w, cropRect.y, cropRect.x+cropRect.w, cropRect.y+t);
-    drawTick(cropRect.x, cropRect.y+cropRect.h-t, cropRect.x, cropRect.y+cropRect.h, cropRect.x+t, cropRect.y+cropRect.h);
-    drawTick(cropRect.x+cropRect.w-t, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h-t);
-    // white ticks on top
-    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
-    drawTick(cropRect.x, cropRect.y+t, cropRect.x, cropRect.y, cropRect.x+t, cropRect.y);
-    drawTick(cropRect.x+cropRect.w-t, cropRect.y, cropRect.x+cropRect.w, cropRect.y, cropRect.x+cropRect.w, cropRect.y+t);
-    drawTick(cropRect.x, cropRect.y+cropRect.h-t, cropRect.x, cropRect.y+cropRect.h, cropRect.x+t, cropRect.y+cropRect.h);
-    drawTick(cropRect.x+cropRect.w-t, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h-t);
-
-    ctx.restore();
-  }
-}
+    function handlePositions(r){
+      const cx = r.x + r.w/2, cy = r.y + r.h/2;
+      return [
+        {name:'nw', x:r.x,       y:r.y},
+        {name:'n',  x:cx,        y:r.y},
+        {name:'ne', x:r.x+r.w,   y:r.y},
+        {name:'e',  x:r.x+r.w,   y:cy},
+        {name:'se', x:r.x+r.w,   y:r.y+r.h},
+        {name:'s',  x:cx,        y:r.y+r.h},
+        {name:'sw', x:r.x,       y:r.y+r.h},
+        {name:'w',  x:r.x,       y:cy},
+      ];
+    }
 
     function attachCropEvents(){
       canvas.onpointerdown = (ev) => {
-        const {x,y} = canvasPoint(ev);
-        cropRect = { x, y, w: 0, h: 0 };
+        const p = canvasPoint(ev);
+        dragStart = p;
+        startRect = cropRect ? {...cropRect} : null;
+
+        const hit = hitTest(p, cropRect);
+        if (hit) {
+          dragMode = hit; // 'move' or a handle name
+        } else if (cropRect && pointInRect(p, cropRect)) {
+          dragMode = 'move';
+        } else {
+          // start a brand-new box
+          dragMode = 'new';
+          cropRect = { x:p.x, y:p.y, w:0, h:0 };
+        }
+
         isDragging = true;
         canvas.setPointerCapture(ev.pointerId);
         drawCanvas();
       };
+
       canvas.onpointermove = (ev) => {
         if (!isDragging || !cropRect) return;
-        const {x,y} = canvasPoint(ev);
-        cropRect.w = x - cropRect.x;
-        cropRect.h = y - cropRect.y;
-        if (cropRect.w < 0) { cropRect.x += cropRect.w; cropRect.w *= -1; }
-        if (cropRect.h < 0) { cropRect.y += cropRect.h; cropRect.h *= -1; }
+        const p = canvasPoint(ev);
+        const dx = p.x - dragStart.x;
+        const dy = p.y - dragStart.y;
+
+        if (dragMode === 'move' && startRect) {
+          cropRect.x = clamp(0, startRect.x + dx, canvas.width - startRect.w);
+          cropRect.y = clamp(0, startRect.y + dy, canvas.height - startRect.h);
+        } else if (dragMode === 'new') {
+          cropRect.w = Math.abs(p.x - cropRect.x);
+          cropRect.h = Math.abs(p.y - cropRect.y);
+          if (p.x < dragStart.x) cropRect.x = p.x;
+          if (p.y < dragStart.y) cropRect.y = p.y;
+        } else if (startRect) {
+          // Resize from a handle
+          resizeFromHandle(dragMode, startRect, dx, dy);
+        }
+
+        // Enforce min size & bounds
+        if (cropRect.w < MIN_W) cropRect.w = MIN_W;
+        if (cropRect.h < MIN_H) cropRect.h = MIN_H;
+        if (cropRect.x < 0) cropRect.x = 0;
+        if (cropRect.y < 0) cropRect.y = 0;
+        if (cropRect.x + cropRect.w > canvas.width)  cropRect.x = canvas.width  - cropRect.w;
+        if (cropRect.y + cropRect.h > canvas.height) cropRect.y = canvas.height - cropRect.h;
+
         drawCanvas();
       };
+
       canvas.onpointerup = (ev) => {
         isDragging = false;
+        dragMode = null;
         canvas.releasePointerCapture(ev.pointerId);
         drawCanvas();
       };
     }
+
+    function hitTest(p, r){
+      if (!r) return null;
+      for (const h of handlePositions(r)) {
+        if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) return h.name;
+      }
+      if (pointInRect(p, r)) return 'move';
+      return null;
+    }
+
+    function pointInRect(p, r){
+      return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+    }
+
+    function resizeFromHandle(mode, r0, dx, dy){
+      // Start from snapshot r0; mutate cropRect
+      let x = r0.x, y = r0.y, w = r0.w, h = r0.h;
+
+      const left   = () => { x = clamp(0, r0.x + dx, r0.x + r0.w - MIN_W); w = (r0.x + r0.w) - x; };
+      const right  = () => { w = clamp(MIN_W, r0.w + dx, canvas.width - r0.x); };
+      const top    = () => { y = clamp(0, r0.y + dy, r0.y + r0.h - MIN_H); h = (r0.y + r0.h) - y; };
+      const bottom = () => { h = clamp(MIN_H, r0.h + dy, canvas.height - r0.y); };
+
+      if (mode.includes('w')) left();
+      if (mode.includes('e')) right();
+      if (mode.includes('n')) top();
+      if (mode.includes('s')) bottom();
+
+      cropRect.x = Math.round(x);
+      cropRect.y = Math.round(y);
+      cropRect.w = Math.round(w);
+      cropRect.h = Math.round(h);
+    }
+
+    function clamp(min, v, max){ return Math.max(min, Math.min(max, v)); }
 
     function canvasPoint(ev){
       const r = canvas.getBoundingClientRect();
@@ -323,9 +386,9 @@
                y: Math.max(0, Math.min(canvas.height, y)) };
     }
 
-    function validCrop(){ return cropRect && cropRect.w >= 10 && cropRect.h >= 10; }
+    function validCrop(){ return cropRect && cropRect.w >= MIN_W && cropRect.h >= MIN_H; }
 
-    // OCR
+    // OCR runner
     async function ocrCanvas(srcCanvas){
       try {
         err.style.display = 'none';
@@ -357,7 +420,7 @@
       }
     }
 
-    // USPS + extraction (same logic as before)
+    // USPS + extraction (unchanged)
     function openUSPS(n){
       const url = new URL('https://tools.usps.com/go/TrackConfirmAction');
       url.searchParams.set('tLabels', n);
@@ -431,7 +494,8 @@
       candidates = [];
       best = null;
       cropRect = null;
-      if (typeof drawCanvas === 'function') drawCanvas();
+      dragMode = null;
+      drawCanvas();
     }
 
     function renderCandidates(){
