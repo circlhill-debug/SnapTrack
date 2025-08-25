@@ -242,47 +242,54 @@
     }
 
     function drawCanvas() {
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      if (!originalImg) return;
-      ctx.drawImage(originalImg, 0, 0, originalImg.width*displayScale, originalImg.height*displayScale);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (!originalImg) return;
 
-      // Dim overlay + white crop box
-      if (cropRect) {
-        ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,.35)';
-        ctx.fillRect(0,0,canvas.width,canvas.height);
-        ctx.clearRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+  // Draw the photo
+  ctx.drawImage(
+    originalImg,
+    0, 0,
+    originalImg.width * displayScale,
+    originalImg.height * displayScale
+  );
 
-        // White border
-        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+  // Draw OUTLINE ONLY (no fill, no overlay)
+  if (cropRect) {
+    ctx.save();
 
-        // Small white corner ticks (visual affordance)
-        const t = 14;
-        ctx.lineWidth = 3;
-        // TL
-        ctx.beginPath();
-        ctx.moveTo(cropRect.x, cropRect.y + t); ctx.lineTo(cropRect.x, cropRect.y);
-        ctx.lineTo(cropRect.x + t, cropRect.y); ctx.stroke();
-        // TR
-        ctx.beginPath();
-        ctx.moveTo(cropRect.x + cropRect.w - t, cropRect.y); ctx.lineTo(cropRect.x + cropRect.w, cropRect.y);
-        ctx.lineTo(cropRect.x + cropRect.w, cropRect.y + t); ctx.stroke();
-        // BL
-        ctx.beginPath();
-        ctx.moveTo(cropRect.x, cropRect.y + cropRect.h - t); ctx.lineTo(cropRect.x, cropRect.y + cropRect.h);
-        ctx.lineTo(cropRect.x + t, cropRect.y + cropRect.h); ctx.stroke();
-        // BR
-        ctx.beginPath();
-        ctx.moveTo(cropRect.x + cropRect.w - t, cropRect.y + cropRect.h);
-        ctx.lineTo(cropRect.x + cropRect.w, cropRect.y + cropRect.h);
-        ctx.lineTo(cropRect.x + cropRect.w, cropRect.y + cropRect.h - t);
-        ctx.stroke();
+    // High-contrast double stroke so it shows on any label
+    // 1) dark under-stroke
+    ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+    ctx.lineWidth = 5;
+    ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
 
-        ctx.restore();
-      }
-    }
+    // 2) white outline on top
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+
+    // Corner ticks for better affordance
+    const t = 14;
+    const drawTick = (x1,y1,x2,y2,x3,y3) => {
+      ctx.beginPath();
+      ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.lineTo(x3,y3); ctx.stroke();
+    };
+    // dark ticks under
+    ctx.strokeStyle = 'rgba(0,0,0,0.9)'; ctx.lineWidth = 5;
+    drawTick(cropRect.x, cropRect.y+t, cropRect.x, cropRect.y, cropRect.x+t, cropRect.y);
+    drawTick(cropRect.x+cropRect.w-t, cropRect.y, cropRect.x+cropRect.w, cropRect.y, cropRect.x+cropRect.w, cropRect.y+t);
+    drawTick(cropRect.x, cropRect.y+cropRect.h-t, cropRect.x, cropRect.y+cropRect.h, cropRect.x+t, cropRect.y+cropRect.h);
+    drawTick(cropRect.x+cropRect.w-t, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h-t);
+    // white ticks on top
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+    drawTick(cropRect.x, cropRect.y+t, cropRect.x, cropRect.y, cropRect.x+t, cropRect.y);
+    drawTick(cropRect.x+cropRect.w-t, cropRect.y, cropRect.x+cropRect.w, cropRect.y, cropRect.x+cropRect.w, cropRect.y+t);
+    drawTick(cropRect.x, cropRect.y+cropRect.h-t, cropRect.x, cropRect.y+cropRect.h, cropRect.x+t, cropRect.y+cropRect.h);
+    drawTick(cropRect.x+cropRect.w-t, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h, cropRect.x+cropRect.w, cropRect.y+cropRect.h-t);
+
+    ctx.restore();
+  }
+}
 
     function attachCropEvents(){
       canvas.onpointerdown = (ev) => {
