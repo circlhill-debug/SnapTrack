@@ -4,6 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SnapTrack — USPS OCR</title>
+
+  <!-- Basic CSP: allows our code + jsDelivr for Tesseract, blocks framing -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 img-src 'self' blob:;
+                 script-src 'self' https://cdn.jsdelivr.net;
+                 connect-src 'self';
+                 style-src 'self' 'unsafe-inline';
+                 frame-ancestors 'none'">
+
   <style>
     :root{--ink:#111;--muted:#6b7280;--line:#e5e7eb;--bg:#f8fafc}
     *{box-sizing:border-box}
@@ -17,7 +27,7 @@
     button:active{transform:scale(.99)}
     .muted{color:var(--muted)}
     .grid{display:grid;gap:16px}
-    .img{width:100%;border:1px solid var(--line);border-radius:12px}
+    .img{width:100%;border:1px solid var(--line);border-radius:12px;touch-action:none}
     .bar{height:8px;border-radius:999px;background:#eef2f7;overflow:hidden}
     .bar>div{height:100%;background:#111;width:0%}
     textarea{width:100%;height:150px;border:1px solid var(--line);border-radius:12px;padding:10px;background:#f7f7f8;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:.9rem}
@@ -27,6 +37,7 @@
     .list > button{width:100%;text-align:left}
     .good{background:#ecfdf5;border-color:#a7f3d0}
     .bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+    footer{margin-top:16px;color:#6b7280;font-size:.85rem;text-align:center}
   </style>
 </head>
 <body>
@@ -55,11 +66,11 @@
 
         <!-- Preview + Crop UI -->
         <div id="previewWrap" style="margin-top:12px;display:none">
-          <canvas id="canvas" class="img" style="touch-action:none"></canvas>
+          <canvas id="canvas" class="img"></canvas>
           <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
             <button id="useCrop" class="primary">Use crop</button>
             <button id="useFull">Use full image</button>
-            <span class="muted" style="font-size:.9rem">Tip: drag inside to move; drag corners/edges to resize; drag outside to start a new box.</span>
+            <span class="muted" style="font-size:.9rem">Drag inside to move; drag corners/edges to resize.</span>
           </div>
         </div>
 
@@ -119,11 +130,18 @@
       <section class="muted" style="font-size:.9rem">
         <p><strong>Tips:</strong> Avoid glare; tilt slightly if needed. Everything runs locally—no images are uploaded.</p>
       </section>
+
+      <footer>
+        © 2025 Dave — SnapTrack v1.5 • Built for USPS label OCR
+      </footer>
     </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
+    // Version
+    const SNAPTRACK_VERSION = "v1.5 (2025-08-25)";
+
     // Elements
     const fileSnap   = document.getElementById('fileSnap');
     const fileUpload = document.getElementById('fileUpload');
@@ -165,9 +183,9 @@
     let cropRect = null;               // {x,y,w,h}
     let isDragging = false;
 
-    let dragMode = null;               // 'move' | 'nw'|'ne'|'sw'|'se'|'n'|'s'|'w'|'e' | 'new'
+    let dragMode = null;               // 'move' | corner/edge | null
     let dragStart = null;              // {x,y}
-    let startRect = null;              // snapshot of rect at pointer down
+    let startRect = null;              // snapshot of rect
 
     // Events
     snapBtn.addEventListener('click',   () => fileSnap.click());
@@ -285,19 +303,19 @@
 
     function attachCropEvents(){
       canvas.onpointerdown = (ev) => {
+        ev.preventDefault();
         const p = canvasPoint(ev);
         dragStart = p;
         startRect = cropRect ? {...cropRect} : null;
 
         const hit = hitTest(p, cropRect);
         if (hit) {
-          dragMode = hit; // 'move' or a handle name
-        } else if (cropRect && pointInRect(p, cropRect)) {
-          dragMode = 'move';
+          dragMode = hit;         // 'move' or a handle name
         } else {
-          // start a brand-new box
-          dragMode = 'new';
-          cropRect = { x:p.x, y:p.y, w:0, h:0 };
+          // NO AUTO-RESET: if click outside, do nothing (keep current rect)
+          dragMode = null;
+          isDragging = false;
+          return;
         }
 
         isDragging = true;
@@ -306,7 +324,7 @@
       };
 
       canvas.onpointermove = (ev) => {
-        if (!isDragging || !cropRect) return;
+        if (!isDragging || !cropRect || !dragMode) return;
         const p = canvasPoint(ev);
         const dx = p.x - dragStart.x;
         const dy = p.y - dragStart.y;
@@ -314,11 +332,6 @@
         if (dragMode === 'move' && startRect) {
           cropRect.x = clamp(0, startRect.x + dx, canvas.width - startRect.w);
           cropRect.y = clamp(0, startRect.y + dy, canvas.height - startRect.h);
-        } else if (dragMode === 'new') {
-          cropRect.w = Math.abs(p.x - cropRect.x);
-          cropRect.h = Math.abs(p.y - cropRect.y);
-          if (p.x < dragStart.x) cropRect.x = p.x;
-          if (p.y < dragStart.y) cropRect.y = p.y;
         } else if (startRect) {
           // Resize from a handle
           resizeFromHandle(dragMode, startRect, dx, dy);
@@ -345,9 +358,11 @@
 
     function hitTest(p, r){
       if (!r) return null;
+      // handles first
       for (const h of handlePositions(r)) {
         if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) return h.name;
       }
+      // inside rect
       if (pointInRect(p, r)) return 'move';
       return null;
     }
@@ -357,7 +372,6 @@
     }
 
     function resizeFromHandle(mode, r0, dx, dy){
-      // Start from snapshot r0; mutate cropRect
       let x = r0.x, y = r0.y, w = r0.w, h = r0.h;
 
       const left   = () => { x = clamp(0, r0.x + dx, r0.x + r0.w - MIN_W); w = (r0.x + r0.w) - x; };
@@ -388,7 +402,7 @@
 
     function validCrop(){ return cropRect && cropRect.w >= MIN_W && cropRect.h >= MIN_H; }
 
-    // OCR runner
+    // OCR
     async function ocrCanvas(srcCanvas){
       try {
         err.style.display = 'none';
@@ -526,5 +540,29 @@
       }
     }
   </script>
+
+  <!--
+  MIT License (recommended to also add as a separate LICENSE file in the repo)
+
+  Copyright (c) 2025 Dave
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+  -->
 </body>
 </html>
