@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SnapTrack — USPS OCR</title>
 
-  <!-- Basic CSP: allows our code + jsDelivr for Tesseract, blocks framing -->
- <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self';
-               img-src 'self' blob:;
-               script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
-               connect-src 'self';
-               style-src 'self' 'unsafe-inline';
-               frame-ancestors 'none'">
+  <!-- CSP (allows our inline script + jsDelivr). If you later externalize JS, you can remove 'unsafe-inline'. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 img-src 'self' blob:;
+                 script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
+                 connect-src 'self';
+                 style-src 'self' 'unsafe-inline';
+                 frame-ancestors 'none'">
 
   <style>
     :root{--ink:#111;--muted:#6b7280;--line:#e5e7eb;--bg:#f8fafc}
@@ -132,7 +132,7 @@
       </section>
 
       <footer>
-        © 2025 Dave — SnapTrack v1.5 • Built for USPS label OCR
+        © 2025 Dave — SnapTrack v1.6 • Built for USPS label OCR
       </footer>
     </div>
   </div>
@@ -140,7 +140,7 @@
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
     // Version
-    const SNAPTRACK_VERSION = "v1.5 (2025-08-25)";
+    const SNAPTRACK_VERSION = "v1.6 (2025-08-25)";
 
     // Elements
     const fileSnap   = document.getElementById('fileSnap');
@@ -172,14 +172,14 @@
     const openManual  = document.getElementById('openManual');
 
     // --- Crop/drag constants & state ---
-    const HANDLE = 16;                 // handle square size (px)
+    const HANDLE = 16;
     const MIN_W = 20, MIN_H = 20;
 
     let candidates = [];
     let best = null;
 
-    let originalImg = null;            // ImageBitmap
-    let displayScale = 1;              // canvas pixels per image pixel
+    let originalImg = null;            // HTMLImageElement
+    let displayScale = 1;
     let cropRect = null;               // {x,y,w,h}
     let isDragging = false;
 
@@ -214,7 +214,7 @@
       openUSPS(cleaned);
     });
 
-    // File handling
+    // File handling (fix: robust Image() loader instead of createImageBitmap)
     async function onFile(e){
       const f = e.target.files && e.target.files[0];
       if(!f) return;
@@ -222,7 +222,7 @@
 
       const url = URL.createObjectURL(f);
       try {
-        originalImg = await createImageBitmap(await fetch(url).then(r=>r.blob()));
+        originalImg = await loadImage(url);   // <-- FIXED loader
         setupCanvasForImage(originalImg);
         previewWrap.style.display = '';
       } catch(ex){
@@ -233,12 +233,21 @@
       }
     }
 
+    function loadImage(src){
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    }
+
     // Canvas / crop
     function setupCanvasForImage(img) {
       const maxW = Math.min(1200, Math.max(360, Math.floor(window.innerWidth - 40)));
-      const scale = Math.min(1, maxW / img.width);
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
+      const scale = Math.min(1, maxW / img.naturalWidth);
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
       displayScale = scale;
 
       setDefaultCrop();
@@ -261,8 +270,7 @@
       ctx.clearRect(0,0,canvas.width,canvas.height);
       if (!originalImg) return;
 
-      // Photo
-      ctx.drawImage(originalImg, 0, 0, originalImg.width*displayScale, originalImg.height*displayScale);
+      ctx.drawImage(originalImg, 0, 0, originalImg.naturalWidth*displayScale, originalImg.naturalHeight*displayScale);
 
       if (cropRect) {
         ctx.save();
@@ -312,7 +320,7 @@
         if (hit) {
           dragMode = hit;         // 'move' or a handle name
         } else {
-          // NO AUTO-RESET: if click outside, do nothing (keep current rect)
+          // Keep current rect (no auto-reset)
           dragMode = null;
           isDragging = false;
           return;
@@ -333,7 +341,6 @@
           cropRect.x = clamp(0, startRect.x + dx, canvas.width - startRect.w);
           cropRect.y = clamp(0, startRect.y + dy, canvas.height - startRect.h);
         } else if (startRect) {
-          // Resize from a handle
           resizeFromHandle(dragMode, startRect, dx, dy);
         }
 
@@ -491,8 +498,9 @@
     }
 
     function makeDownscaledCanvas(img, maxDim=1800){
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const w0 = img.naturalWidth, h0 = img.naturalHeight;
+      const scale = Math.min(1, maxDim / Math.max(w0, h0));
+      const w = Math.round(w0 * scale), h = Math.round(h0 * scale);
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
       const cctx = c.getContext('2d');
@@ -510,34 +518,6 @@
       cropRect = null;
       dragMode = null;
       drawCanvas();
-    }
-
-    function renderCandidates(){
-      if(!candidates.length){
-        many.innerHTML = '<p class="muted" style="margin:0">No tracking numbers captured yet.</p>';
-        many.style.display = '';
-        return;
-      }
-      const scored = candidates.map(n => ({n, score: score(n)})).sort((a,b)=>b.score-a.score);
-      best = scored[0].n;
-
-      bestNum.textContent = human(best);
-      bestBox.style.display = '';
-      manualInput.value = best;
-
-      if(candidates.length > 1){
-        many.style.display = 'grid';
-        many.innerHTML = '';
-        candidates.forEach((n) => {
-          const b = document.createElement('button');
-          b.className = 'card';
-          b.textContent = human(n);
-          b.onclick = () => openUSPS(n);
-          many.appendChild(b);
-        });
-      } else {
-        many.style.display = 'none';
-      }
     }
   </script>
 
