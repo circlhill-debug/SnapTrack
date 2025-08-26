@@ -562,23 +562,47 @@
     }
 
     // Crop mapped to ORIGINAL image (accounts for pan + zoom)
-    function cropFromCanvas(){
-      const scaleAll = baseScale * zoom;
-      // Convert cropRect (canvas) -> original image pixels
-      const srcX = Math.max(0, Math.round((cropRect.x - panX) / scaleAll));
-      const srcY = Math.max(0, Math.round((cropRect.y - panY) / scaleAll));
-      const srcW = Math.max(1, Math.round(cropRect.w / scaleAll));
-      const srcH = Math.max(1, Math.round(cropRect.h / scaleAll));
+   function cropFromCanvas(){
+  if (!originalImg || !cropRect) return null;
 
-      const c = document.createElement('canvas');
-      c.width = srcW;
-      c.height = srcH;
-      const cctx = c.getContext('2d');
-      cctx.drawImage(originalImg, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+  // 1) Rectangle of the image as it’s drawn on the canvas (with pan + zoom)
+  const scaleAll = baseScale * zoom;
+  const imgRect = {
+    x: panX,
+    y: panY,
+    w: originalImg.naturalWidth * scaleAll,
+    h: originalImg.naturalHeight * scaleAll
+  };
 
-      applyThresholdToCanvas(c);
-      return c;
-    }
+  // 2) Intersect the crop box with the drawn image
+  const x1 = Math.max(cropRect.x, imgRect.x);
+  const y1 = Math.max(cropRect.y, imgRect.y);
+  const x2 = Math.min(cropRect.x + cropRect.w, imgRect.x + imgRect.w);
+  const y2 = Math.min(cropRect.y + cropRect.h, imgRect.y + imgRect.h);
+
+  const iw = Math.round(x2 - x1);
+  const ih = Math.round(y2 - y1);
+  if (iw <= 0 || ih <= 0) {
+    // Nothing to crop (box is fully off the image)
+    throw new Error('Crop is outside the image. Move it onto the photo.');
+  }
+
+  // 3) Map that intersection back to ORIGINAL image pixels
+  const srcX = Math.max(0, Math.round((x1 - imgRect.x) / scaleAll));
+  const srcY = Math.max(0, Math.round((y1 - imgRect.y) / scaleAll));
+  const srcW = Math.max(1, Math.round(iw / scaleAll));
+  const srcH = Math.max(1, Math.round(ih / scaleAll));
+
+  // 4) Draw the crop into a fresh canvas and apply B/W threshold
+  const c = document.createElement('canvas');
+  c.width = srcW;
+  c.height = srcH;
+  const cctx = c.getContext('2d');
+  cctx.drawImage(originalImg, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+
+  applyThresholdToCanvas(c);
+  return c;
+}
 
     // Full image downscale + threshold
     function makeDownscaledCanvas(img, maxDim=1800){
