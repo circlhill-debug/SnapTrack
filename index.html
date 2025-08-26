@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SnapTrack — USPS OCR</title>
 
   <style>
@@ -28,9 +28,6 @@
     .list > button{width:100%;text-align:left}
     .good{background:#ecfdf5;border-color:#a7f3d0}
     .bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
-    .zoombar{position:absolute;top:12px;right:12px;display:flex;gap:6px}
-    .zoombar button{padding:8px 10px;border-radius:10px}
-    .relative{position:relative}
     footer{margin-top:16px;color:#6b7280;font-size:.85rem;text-align:center}
   </style>
 </head>
@@ -38,7 +35,7 @@
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Two-finger **pinch to zoom** and **drag with two fingers to pan**. One finger moves/resizes the crop box. Then tap <em>Use crop</em>.</p>
+      <p class="muted">Snap or upload a USPS label. Crop appears immediately—drag inside to move, drag corners/edges to resize, then tap <em>Use crop</em>.</p>
     </header>
 
     <div class="grid">
@@ -60,18 +57,11 @@
 
         <!-- Preview + Crop UI -->
         <div id="previewWrap" style="margin-top:12px;display:none">
-          <div class="relative">
-            <canvas id="canvas" class="img"></canvas>
-            <div class="zoombar" aria-hidden="true">
-              <button id="zoomOut" title="Zoom out">−</button>
-              <button id="zoomReset" title="Reset zoom">100%</button>
-              <button id="zoomIn" title="Zoom in">+</button>
-            </div>
-          </div>
+          <canvas id="canvas" class="img"></canvas>
           <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
             <button id="useCrop" class="primary">Use crop</button>
             <button id="useFull">Use full image</button>
-            <span class="muted" style="font-size:.9rem">Tip: pinch to zoom for precise cropping.</span>
+            <span class="muted" style="font-size:.9rem">Drag inside to move; drag corners/edges to resize.</span>
           </div>
         </div>
 
@@ -133,7 +123,7 @@
       </section>
 
       <footer>
-        © 2025 Dave — SnapTrack v2.0 • Built for USPS label OCR
+        © 2025 Dave — SnapTrack v1.9 • Built for USPS label OCR
       </footer>
     </div>
   </div>
@@ -141,9 +131,9 @@
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script>
     // Version
-    const SNAPTRACK_VERSION = "v2.0 (2025-08-25)";
+    const SNAPTRACK_VERSION = "v1.9 (2025-08-25)";
 
-    // ===== Elements =====
+    // Elements
     const fileSnap   = document.getElementById('fileSnap');
     const fileUpload = document.getElementById('fileUpload');
     const snapBtn    = document.getElementById('snapBtn');
@@ -172,37 +162,24 @@
     const manualInput = document.getElementById('manualInput');
     const openManual  = document.getElementById('openManual');
 
-    // Zoom UI
-    const zoomInBtn   = document.getElementById('zoomIn');
-    const zoomOutBtn  = document.getElementById('zoomOut');
-    const zoomResetBtn= document.getElementById('zoomReset');
-
-    // ===== Config / State =====
-    const HANDLE    = 20;     // crop handle size (px) — tweak as you like
-    const EDGE_HIT  = 18;     // edge hit zone thickness (px)
+    // --- Crop/drag constants & state ---
+    const HANDLE = 20;          // bigger touch targets
+    const EDGE_HIT = 18;        // edge resize zone thickness
     const MIN_W = 20, MIN_H = 20;
-
-    const MIN_ZOOM = 0.6;
-    const MAX_ZOOM = 4.0;
 
     let candidates = [];
     let best = null;
 
     let originalImg = null;            // HTMLImageElement
-    let baseScale = 1;                 // canvas px per original px at zoom=1
-    let zoom = 1;                      // pinch zoom factor
-    let panX = 0, panY = 0;            // image top-left in canvas coords (after zoom)
-    let cropRect = null;               // in canvas coords
+    let displayScale = 1;
+    let cropRect = null;               // {x,y,w,h}
     let isDragging = false;
+
     let dragMode = null;               // 'move' | 'nw'|'ne'|'se'|'sw'|'n'|'s'|'w'|'e' | null
     let dragStart = null;              // {x,y}
-    let startRect = null;              // snapshot of crop rect
+    let startRect = null;              // snapshot of rect
 
-    // Pinch state
-    const activePointers = new Map();  // id -> {x,y}
-    let pinchStart = null;             // {dist, mid:{x,y}, zoom, panX, panY}
-
-    // ===== Events: file inputs =====
+    // Events
     snapBtn.addEventListener('click',   () => fileSnap.click());
     uploadBtn.addEventListener('click', () => fileUpload.click());
     fileSnap.addEventListener('change', onFile);
@@ -229,12 +206,7 @@
       openUSPS(cleaned);
     });
 
-    // Zoom buttons
-    zoomInBtn.addEventListener('click',  () => zoomAround(canvas.width/2, canvas.height/2, 1.2));
-    zoomOutBtn.addEventListener('click', () => zoomAround(canvas.width/2, canvas.height/2, 1/1.2));
-    zoomResetBtn.addEventListener('click', () => setZoom(1, canvas.width/2, canvas.height/2));
-
-    // ===== File handling =====
+    // File handling (robust loader)
     async function onFile(e){
       const f = e.target.files && e.target.files[0];
       if(!f) return;
@@ -262,51 +234,39 @@
       });
     }
 
-    // ===== Canvas / layout =====
+    // Canvas / crop setup
     function setupCanvasForImage(img) {
       const maxW = Math.min(1200, Math.max(360, Math.floor(window.innerWidth - 40)));
       const scale = Math.min(1, maxW / img.naturalWidth);
       canvas.width = Math.round(img.naturalWidth * scale);
       canvas.height = Math.round(img.naturalHeight * scale);
-      baseScale = scale;
-
-      // Reset view
-      zoom = 1;
-      // center the image
-      panX = Math.round((canvas.width  - img.naturalWidth * baseScale * zoom) / 2);
-      panY = Math.round((canvas.height - img.naturalHeight* baseScale * zoom) / 2);
+      displayScale = scale;
 
       setDefaultCrop();
       drawCanvas();
-      attachEvents();
-      updateZoomLabel();
+      attachCropEvents();
     }
 
     function setDefaultCrop(){
-      const viewW = originalImg.naturalWidth * baseScale * zoom;
-      const viewH = originalImg.naturalHeight* baseScale * zoom;
-      const x0 = Math.round((canvas.width  - viewW) / 2 + viewW*0.04);
-      const y0 = Math.round((canvas.height - viewH) / 2 + viewH*0.36);
-      const w  = Math.round(viewW * 0.92);
-      const h  = Math.round(viewH * 0.28);
-      cropRect = { x: x0, y: y0, w, h };
+      const w = Math.round(canvas.width * 0.92);
+      const h = Math.round(canvas.height * 0.28);
+      cropRect = {
+        x: Math.round((canvas.width - w) / 2),
+        y: Math.round((canvas.height - h) / 2),
+        w, h
+      };
     }
 
-    // ===== Rendering =====
+    // Rendering (outline + visible handles)
     function drawCanvas() {
       ctx.clearRect(0,0,canvas.width,canvas.height);
       if (!originalImg) return;
 
-      const drawW = originalImg.naturalWidth * baseScale * zoom;
-      const drawH = originalImg.naturalHeight* baseScale * zoom;
+      ctx.drawImage(originalImg, 0, 0, originalImg.naturalWidth*displayScale, originalImg.naturalHeight*displayScale);
 
-      // Image (with pan + zoom)
-      ctx.drawImage(originalImg, panX, panY, drawW, drawH);
-
-      // Crop box
       if (cropRect) {
         ctx.save();
-        // dark stroke under white stroke (visible on bright/dark images)
+        // double-stroke outline
         ctx.strokeStyle = 'rgba(0,0,0,0.9)';
         ctx.lineWidth = 5;
         ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
@@ -314,8 +274,9 @@
         ctx.lineWidth = 3;
         ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
 
-        // handles
-        for (const h of handlePositions(cropRect)) {
+        // bigger handles for touch
+        const handles = handlePositions(cropRect);
+        for (const h of handles) {
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
           ctx.strokeStyle = 'rgba(0,0,0,0.9)';
@@ -340,103 +301,71 @@
       ];
     }
 
-    // ===== Interaction =====
-    function attachEvents(){
-      // Pointer/pinch on the canvas
+    // Interaction (move + resize via handles OR edges) — no auto-reset
+    function attachCropEvents(){
       canvas.onpointerdown = (ev) => {
         ev.preventDefault();
-        canvas.setPointerCapture(ev.pointerId);
-        activePointers.set(ev.pointerId, canvasPoint(ev));
-
-        if (activePointers.size >= 2) {
-          // start pinch gesture
-          pinchStart = getPinchState();
-          // while pinching, do NOT start crop dragging
-          isDragging = false;
-          dragMode = null;
-          return;
-        }
-
-        // single finger: crop interaction
-        const p = activePointers.get(ev.pointerId);
+        const p = canvasPoint(ev);
         dragStart = p;
         startRect = cropRect ? {...cropRect} : null;
+
         const hit = hitTest(p, cropRect);
         if (hit) {
-          dragMode = hit; isDragging = true;
+          dragMode = hit; // 'move' or handle/edge name
+          isDragging = true;
+          canvas.setPointerCapture(ev.pointerId);
         } else {
-          dragMode = null; isDragging = false;
+          // keep current rect; do nothing
+          dragMode = null;
+          isDragging = false;
         }
         drawCanvas();
       };
 
       canvas.onpointermove = (ev) => {
-        ev.preventDefault();
-        if (!activePointers.has(ev.pointerId)) return;
-        activePointers.set(ev.pointerId, canvasPoint(ev));
-
-        if (activePointers.size >= 2) {
-          // Pinch zoom/pan
-          const pin = getPinchState();
-          if (!pinchStart) pinchStart = pin;
-
-          const scaleFactor = pin.dist / pinchStart.dist;
-          const newZoom = clamp(MIN_ZOOM, pinchStart.zoom * scaleFactor, MAX_ZOOM);
-
-          // keep the image point under the initial midpoint fixed
-          const scale0 = baseScale * pinchStart.zoom;
-          const scaleN = baseScale * newZoom;
-          const ptImageX = (pinchStart.mid.x - pinchStart.panX) / scale0;
-          const ptImageY = (pinchStart.mid.y - pinchStart.panY) / scale0;
-
-          zoom = newZoom;
-          panX = pin.mid.x - ptImageX * scaleN;
-          panY = pin.mid.y - ptImageY * scaleN;
-
-          clampPan();
-          updateZoomLabel();
-          drawCanvas();
-          return;
-        }
-
-        // Single-finger crop drag/resize
         if (!isDragging || !cropRect || !dragMode) return;
-        const p = activePointers.get(ev.pointerId);
+        const p = canvasPoint(ev);
         const dx = p.x - dragStart.x;
         const dy = p.y - dragStart.y;
 
         if (dragMode === 'move' && startRect) {
-          cropRect.x = startRect.x + dx;
-          cropRect.y = startRect.y + dy;
+          cropRect.x = clamp(0, startRect.x + dx, canvas.width - startRect.w);
+          cropRect.y = clamp(0, startRect.y + dy, canvas.height - startRect.h);
         } else if (startRect) {
           resizeFromHandle(dragMode, startRect, dx, dy);
         }
 
-        clampCropWithinImage();
+        // Enforce min size & bounds
+        if (cropRect.w < MIN_W) cropRect.w = MIN_W;
+        if (cropRect.h < MIN_H) cropRect.h = MIN_H;
+        if (cropRect.x < 0) cropRect.x = 0;
+        if (cropRect.y < 0) cropRect.y = 0;
+        if (cropRect.x + cropRect.w > canvas.width)  cropRect.x = canvas.width  - cropRect.w;
+        if (cropRect.y + cropRect.h > canvas.height) cropRect.y = canvas.height - cropRect.h;
+
         drawCanvas();
       };
 
       canvas.onpointerup = (ev) => {
-        ev.preventDefault();
-        activePointers.delete(ev.pointerId);
-        if (activePointers.size < 2) pinchStart = null;
         isDragging = false;
         dragMode = null;
         canvas.releasePointerCapture(ev.pointerId);
         drawCanvas();
       };
-
-      canvas.onpointercancel = canvas.onpointerup;
     }
 
-    // Edge/corner hit tests for crop
+    // Touch-friendly hit-test: corners first, then edges, then move
     function hitTest(p, r){
       if (!r) return null;
-      // corners first
+
+      // corner handles
       for (const h of handlePositions(r)) {
-        if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) return h.name;
+        if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) {
+          return h.name; // 'nw','n','ne','e','se','s','sw','w'
+        }
       }
-      // edges (exclude corners)
+
+      // edge zones (exclude corner squares)
       const leftZone   = (p.x >= r.x - EDGE_HIT && p.x <= r.x + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
       const rightZone  = (p.x >= r.x + r.w - EDGE_HIT && p.x <= r.x + r.w + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
       const topZone    = (p.y >= r.y - EDGE_HIT && p.y <= r.y + EDGE_HIT && p.x >= r.x + HANDLE/2 && p.x <= r.x + r.w - HANDLE/2);
@@ -445,62 +374,35 @@
       if (rightZone)  return 'e';
       if (topZone)    return 'n';
       if (bottomZone) return 's';
+
       // inside rect → move
-      if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) return 'move';
+      if (pointInRect(p, r)) return 'move';
       return null;
+    }
+
+    function pointInRect(p, r){
+      return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
     }
 
     function resizeFromHandle(mode, r0, dx, dy){
       let x = r0.x, y = r0.y, w = r0.w, h = r0.h;
-      const left   = () => { x = r0.x + dx; w = r0.w - dx; };
-      const right  = () => { w = r0.w + dx; };
-      const top    = () => { y = r0.y + dy; h = r0.h - dy; };
-      const bottom = () => { h = r0.h + dy; };
+
+      const left   = () => { x = clamp(0, r0.x + dx, r0.x + r0.w - MIN_W); w = (r0.x + r0.w) - x; };
+      const right  = () => { w = clamp(MIN_W, r0.w + dx, canvas.width - r0.x); };
+      const top    = () => { y = clamp(0, r0.y + dy, r0.y + r0.h - MIN_H); h = (r0.y + r0.h) - y; };
+      const bottom = () => { h = clamp(MIN_H, r0.h + dy, canvas.height - r0.y); };
 
       if (mode.includes('w')) left();
       if (mode.includes('e')) right();
       if (mode.includes('n')) top();
       if (mode.includes('s')) bottom();
 
-      // min size
-      if (w < MIN_W) { w = MIN_W; x = r0.x + (r0.w - w) * (mode.includes('w') ? 1 : 0); }
-      if (h < MIN_H) { h = MIN_H; y = r0.y + (r0.h - h) * (mode.includes('n') ? 1 : 0); }
-
-      cropRect = { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
+      cropRect.x = Math.round(x);
+      cropRect.y = Math.round(y);
+      cropRect.w = Math.round(w);
+      cropRect.h = Math.round(h);
     }
 
-    function clampPan(){
-      // Keep image roughly covering canvas; allow slight overscroll
-      const drawW = originalImg.naturalWidth * baseScale * zoom;
-      const drawH = originalImg.naturalHeight* baseScale * zoom;
-      const minX = Math.min(0, canvas.width - drawW);
-      const minY = Math.min(0, canvas.height - drawH);
-      const maxX = Math.max(0, canvas.width - drawW);
-      const maxY = Math.max(0, canvas.height - drawH);
-      panX = clamp(minX, panX, maxX);
-      panY = clamp(minY, panY, maxY);
-    }
-
-    function clampCropWithinImage(){
-      const drawW = originalImg.naturalWidth * baseScale * zoom;
-      const drawH = originalImg.naturalHeight* baseScale * zoom;
-      const imgRect = { x: panX, y: panY, w: drawW, h: drawH };
-
-      // Clamp cropRect to within the drawn image rect
-      if (cropRect.w > imgRect.w) cropRect.w = imgRect.w;
-      if (cropRect.h > imgRect.h) cropRect.h = imgRect.h;
-
-      if (cropRect.x < imgRect.x) cropRect.x = imgRect.x;
-      if (cropRect.y < imgRect.y) cropRect.y = imgRect.y;
-      if (cropRect.x + cropRect.w > imgRect.x + imgRect.w) cropRect.x = imgRect.x + imgRect.w - cropRect.w;
-      if (cropRect.y + cropRect.h > imgRect.y + imgRect.h) cropRect.y = imgRect.y + imgRect.h - cropRect.h;
-
-      // Enforce min size after clamping
-      if (cropRect.w < MIN_W) cropRect.w = MIN_W;
-      if (cropRect.h < MIN_H) cropRect.h = MIN_H;
-    }
-
-    // ===== Utilities =====
     function clamp(min, v, max){ return Math.max(min, Math.min(max, v)); }
 
     function canvasPoint(ev){
@@ -511,42 +413,10 @@
                y: Math.max(0, Math.min(canvas.height, y)) };
     }
 
-    function getPinchState(){
-      const ids = Array.from(activePointers.keys());
-      const p1 = activePointers.get(ids[0]);
-      const p2 = activePointers.get(ids[1]);
-      const dx = p2.x - p1.x, dy = p2.y - p1.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const mid = { x: (p1.x + p2.x)/2, y: (p1.y + p2.y)/2 };
-      return { dist, mid, zoom, panX, panY };
-    }
+    function validCrop(){ return cropRect && cropRect.w >= MIN_W && cropRect.h >= MIN_H; }
 
-    function setZoom(newZoom, focusX, focusY){
-      const z = clamp(MIN_ZOOM, newZoom, MAX_ZOOM);
-      const scale0 = baseScale * zoom;
-      const scaleN = baseScale * z;
-      // keep point under focus stable
-      const ptImageX = (focusX - panX) / scale0;
-      const ptImageY = (focusY - panY) / scale0;
-      zoom = z;
-      panX = focusX - ptImageX * scaleN;
-      panY = focusY - ptImageY * scaleN;
-      clampPan();
-      updateZoomLabel();
-      drawCanvas();
-    }
-
-    function zoomAround(cx, cy, factor){
-      setZoom(zoom * factor, cx, cy);
-    }
-
-    function updateZoomLabel(){
-      if (!zoomResetBtn) return;
-      zoomResetBtn.textContent = Math.round(zoom * 100) + '%';
-    }
-
-    // ===== OCR pipeline (same as v1.9; BW threshold is in applyThresholdToCanvas) =====
-    const THRESHOLD = 128; // tweak 110–150 if needed for backlit screens
+    // ---- OCR helpers: always-on thresholding for high contrast ----
+    const THRESHOLD = 128; // tweak 110–150 if needed
 
     function applyThresholdToCanvas(c){
       const cctx = c.getContext('2d', { willReadFrequently: true });
@@ -561,48 +431,22 @@
       cctx.putImageData(imgData, 0, 0);
     }
 
-    // Crop mapped to ORIGINAL image (accounts for pan + zoom)
-   function cropFromCanvas(){
-  if (!originalImg || !cropRect) return null;
+    // Crop mapped to ORIGINAL image + threshold
+    function cropFromCanvas(){
+      const srcX = Math.max(0, Math.round(cropRect.x / displayScale));
+      const srcY = Math.max(0, Math.round(cropRect.y / displayScale));
+      const srcW = Math.max(1, Math.round(cropRect.w / displayScale));
+      const srcH = Math.max(1, Math.round(cropRect.h / displayScale));
 
-  // 1) Rectangle of the image as it’s drawn on the canvas (with pan + zoom)
-  const scaleAll = baseScale * zoom;
-  const imgRect = {
-    x: panX,
-    y: panY,
-    w: originalImg.naturalWidth * scaleAll,
-    h: originalImg.naturalHeight * scaleAll
-  };
+      const c = document.createElement('canvas');
+      c.width = srcW;
+      c.height = srcH;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(originalImg, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
 
-  // 2) Intersect the crop box with the drawn image
-  const x1 = Math.max(cropRect.x, imgRect.x);
-  const y1 = Math.max(cropRect.y, imgRect.y);
-  const x2 = Math.min(cropRect.x + cropRect.w, imgRect.x + imgRect.w);
-  const y2 = Math.min(cropRect.y + cropRect.h, imgRect.y + imgRect.h);
-
-  const iw = Math.round(x2 - x1);
-  const ih = Math.round(y2 - y1);
-  if (iw <= 0 || ih <= 0) {
-    // Nothing to crop (box is fully off the image)
-    throw new Error('Crop is outside the image. Move it onto the photo.');
-  }
-
-  // 3) Map that intersection back to ORIGINAL image pixels
-  const srcX = Math.max(0, Math.round((x1 - imgRect.x) / scaleAll));
-  const srcY = Math.max(0, Math.round((y1 - imgRect.y) / scaleAll));
-  const srcW = Math.max(1, Math.round(iw / scaleAll));
-  const srcH = Math.max(1, Math.round(ih / scaleAll));
-
-  // 4) Draw the crop into a fresh canvas and apply B/W threshold
-  const c = document.createElement('canvas');
-  c.width = srcW;
-  c.height = srcH;
-  const cctx = c.getContext('2d');
-  cctx.drawImage(originalImg, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
-
-  applyThresholdToCanvas(c);
-  return c;
-}
+      applyThresholdToCanvas(c);
+      return c;
+    }
 
     // Full image downscale + threshold
     function makeDownscaledCanvas(img, maxDim=1800){
@@ -613,10 +457,12 @@
       c.width = w; c.height = h;
       const cctx = c.getContext('2d');
       cctx.drawImage(img, 0, 0, w, h);
+
       applyThresholdToCanvas(c);
       return c;
     }
 
+    // OCR runner
     async function ocrCanvas(srcCanvas){
       try {
         err.style.display = 'none';
@@ -649,7 +495,7 @@
       }
     }
 
-    // ===== USPS helpers =====
+    // USPS + extraction (unchanged)
     function openUSPS(n){
       const url = new URL('https://tools.usps.com/go/TrackConfirmAction');
       url.searchParams.set('tLabels', n);
@@ -700,8 +546,6 @@
       rawOut.value = '';
       candidates = [];
       best = null;
-
-      // keep current zoom/pan unless new image loaded
       cropRect = null;
       dragMode = null;
       drawCanvas();
