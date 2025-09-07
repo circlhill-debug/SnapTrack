@@ -280,16 +280,42 @@
       }
     }
 
-    function loadZXing(){
-      if (window.ZXing && ZXing.BrowserMultiFormatReader) return Promise.resolve();
-      return new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.2';
-        s.async = true;
-        s.onload = () => (window.ZXing && ZXing.BrowserMultiFormatReader) ? resolve() : reject(new Error('ZXing loaded but no reader'));
-        s.onerror = () => reject(new Error('ZXing load failed'));
-        document.head.appendChild(s);
-      });
+    async function loadZXing(){
+      // Already loaded?
+      if ((window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader) ||
+          (window.ZXing && window.ZXing.BrowserMultiFormatReader)) return;
+
+      const urls = [
+        // Preferred UMD builds of @zxing/browser
+        'https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.4/umd/index.min.js',
+        'https://unpkg.com/@zxing/browser@0.1.4/umd/index.min.js',
+        // Fallback to latest tag if pinned fails
+        'https://cdn.jsdelivr.net/npm/@zxing/browser/umd/index.min.js',
+        'https://unpkg.com/@zxing/browser/umd/index.min.js',
+        // Last resort: legacy library bundle
+        'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.2/umd/index.min.js',
+        'https://unpkg.com/@zxing/library@0.21.2/umd/index.min.js',
+      ];
+
+      for (const url of urls) {
+        try {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = url; s.async = true;
+            s.onload = resolve; s.onerror = () => reject(new Error('load failed: ' + url));
+            document.head.appendChild(s);
+          });
+          if ((window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader) ||
+              (window.ZXing && window.ZXing.BrowserMultiFormatReader)) {
+            scanDebug && (scanDebug.textContent = 'Loaded ZXing from ' + url);
+            return;
+          }
+        } catch(e) {
+          // try next
+          scanDebug && (scanDebug.textContent = 'ZXing load error: ' + (e.message||e));
+        }
+      }
+      throw new Error('ZXing loaded but no BrowserMultiFormatReader found');
     }
 
     async function toggleTorch(){
@@ -406,19 +432,26 @@
     // ZXing fallback
     let zxingReader = null;
     async function startZXing(){
-      if (!window.ZXing || !ZXing.BrowserMultiFormatReader) throw new Error('ZXing not loaded');
-      // Restrict ZXing to linear formats to avoid QR/Data Matrix noise
-      const hints = new ZXing.Map();
-      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-        ZXing.BarcodeFormat.CODE_128,
-        ZXing.BarcodeFormat.ITF,
-        ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.EAN_13,
-        ZXing.BarcodeFormat.EAN_8,
-        ZXing.BarcodeFormat.UPC_E,
-      ]);
-      try { hints.set(ZXing.DecodeHintType.ASSUME_CODE_128, true); } catch {}
-      zxingReader = new ZXing.BrowserMultiFormatReader(hints);
+      const ZXB = window.ZXingBrowser;
+      const ZXL = window.ZXing;
+      const ZX = ZXB || ZXL;
+      if (!ZX) throw new Error('ZXing global missing');
+
+      // Try to build reader (with optional hints if available)
+      try {
+        if (ZX.DecodeHintType && ZX.BarcodeFormat && ZX.Map && ZX.BrowserMultiFormatReader) {
+          const hints = new ZX.Map();
+          // Restrict to linear formats to avoid QR/Data Matrix noise
+          const fmts = [];
+          const push = (k) => { if (ZX.BarcodeFormat && ZX.BarcodeFormat[k]) fmts.push(ZX.BarcodeFormat[k]); };
+          ['CODE_128','ITF','CODE_39','EAN_13','EAN_8','UPC_E'].forEach(push);
+          if (fmts.length) hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, fmts);
+          try { if (ZX.DecodeHintType.ASSUME_CODE_128) hints.set(ZX.DecodeHintType.ASSUME_CODE_128, true); } catch {}
+          zxingReader = new ZX.BrowserMultiFormatReader(hints);
+        }
+      } catch {}
+      if (!zxingReader && ZX.BrowserMultiFormatReader) zxingReader = new ZX.BrowserMultiFormatReader();
+      if (!zxingReader) throw new Error('No BrowserMultiFormatReader class available');
 
       const constraintsList = [
         { video: { facingMode: { ideal: 'environment' } } },
@@ -426,46 +459,53 @@
         { video: { facingMode: { ideal: 'user' } } },
       ];
 
-      const run = (constraints) => zxingReader.decodeFromConstraints(
-        constraints,
-        scanVideo,
-        (result, err) => {
-          if (result && result.getText) {
-            const v = result.getText();
-            const fmt = result.getBarcodeFormat ? String(result.getBarcodeFormat()) : 'unknown';
-            updateDebug(fmt, v);
-            const digits = (v||'').replace(/\D+/g,'');
-            if (digits.length < 18) {
-              scanStatus.textContent = `Detected ${fmt} ${digits.length}-digits (not USPS). Looking for 20–34.`;
-              return;
-            }
-            let found = extractUsps(v);
-            if (!found.length) found = extractFromBarcode(v);
-            if (found.length) {
-              onDetected(v, found);
-              closeScanner(true);
-              candidates = found;
-              renderCandidates();
-              if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
-            } else {
-              const dbg = (v || '').toString();
-              const digits2 = dbg.replace(/\D+/g,'');
-              scanStatus.textContent = 'Detected code, parsing… digits=' + digits2.length;
-            }
-          }
-          if (err && scanDebug) scanDebug.textContent = 'ZXing decode error: ' + err;
+      const runConstraints = (constraints) => {
+        if (typeof zxingReader.decodeFromConstraints === 'function') {
+          return zxingReader.decodeFromConstraints(constraints, scanVideo, onZXingResult);
         }
-      );
+        if (typeof zxingReader.decodeFromVideoDevice === 'function') {
+          // decodeFromVideoDevice(null, ...) picks default camera
+          return zxingReader.decodeFromVideoDevice(null, scanVideo, onZXingResult);
+        }
+        throw new Error('No suitable decode method on ZXing reader');
+      };
 
-      // Probe constraints to avoid ZXing failing to open camera; then start with the first that works
+      const onZXingResult = (result, err) => {
+        if (result && result.getText) {
+          const v = result.getText();
+          const fmt = result.getBarcodeFormat ? String(result.getBarcodeFormat()) : 'unknown';
+          updateDebug(fmt, v);
+          const digits = (v||'').replace(/\D+/g,'');
+          if (digits.length < 18) {
+            scanStatus.textContent = `Detected ${fmt} ${digits.length}-digits (not USPS). Looking for 20–34.`;
+            return;
+          }
+          let found = extractUsps(v);
+          if (!found.length) found = extractFromBarcode(v);
+          if (found.length) {
+            onDetected(v, found);
+            closeScanner(true);
+            candidates = found;
+            renderCandidates();
+            if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
+          } else {
+            const dbg = (v || '').toString();
+            const digits2 = dbg.replace(/\D+/g,'');
+            scanStatus.textContent = 'Detected code, parsing… digits=' + digits2.length;
+          }
+        }
+        if (err && scanDebug) scanDebug.textContent = 'ZXing decode error: ' + err;
+      };
+
+      // Probe constraints to avoid open failure
       for (const c of constraintsList) {
         try {
           if (scanDebug) scanDebug.textContent = 'Starting fallback with constraints: ' + JSON.stringify(c);
           const s = await navigator.mediaDevices.getUserMedia(c);
           s.getTracks().forEach(t=>t.stop());
-          return run(c);
+          return runConstraints(c);
         } catch (e) {
-          continue; // try next
+          continue;
         }
       }
       throw new Error('Could not start fallback scanner (camera not available)');
