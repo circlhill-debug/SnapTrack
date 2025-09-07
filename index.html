@@ -35,7 +35,7 @@
   <div class="wrap">
     <header style="margin-bottom:16px">
       <h1>SnapTrack — USPS OCR</h1>
-      <p class="muted">Snap or upload a USPS label. Crop appears immediately—drag inside to move, drag corners/edges to resize, then tap <em>Use crop</em>.</p>
+      <p class="muted">Snap or upload a USPS label. Crop appears immediately—drag inside to move, drag edges to resize, then tap <em>Use crop</em>.</p>
     </header>
 
     <div class="grid">
@@ -61,7 +61,7 @@
           <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
             <button id="useCrop" class="primary">Use crop</button>
             <button id="useFull">Use full image</button>
-            <span class="muted" style="font-size:.9rem">Drag inside to move; drag corners/edges to resize.</span>
+            <span class="muted" style="font-size:.9rem">Drag inside to move; drag edges to resize.</span>
           </div>
         </div>
 
@@ -163,7 +163,7 @@
     const openManual  = document.getElementById('openManual');
 
     // --- Crop/drag constants & state ---
-    const HANDLE = 14;          // bigger touch targets
+    const HANDLE = 14;          // touch corner hit area (visual squares removed)
     const EDGE_HIT = 18;        // edge resize zone thickness
     const MIN_W = 20, MIN_H = 20;
 
@@ -257,7 +257,7 @@
       };
     }
 
-    // Rendering (outline + visible handles)
+    // Rendering (outline + subtle edge grips)
     function drawCanvas() {
       ctx.clearRect(0,0,canvas.width,canvas.height);
       if (!originalImg) return;
@@ -274,32 +274,43 @@
         ctx.lineWidth = 3;
         ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
 
-        // bigger handles for touch
-        const handles = handlePositions(cropRect);
-        for (const h of handles) {
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
-          ctx.strokeStyle = 'rgba(0,0,0,0.9)';
-          ctx.lineWidth = 2.5;
-          ctx.strokeRect(h.x - HANDLE/2, h.y - HANDLE/2, HANDLE, HANDLE);
-        }
+        // subtle edge grip bars (no bulky squares)
+        drawEdgeGrips(cropRect);
         ctx.restore();
       }
     }
 
-    function handlePositions(r){
-      const cx = r.x + r.w/2, cy = r.y + r.h/2;
-      return [
-        {name:'nw', x:r.x,       y:r.y},
-        {name:'n',  x:cx,        y:r.y},
-        {name:'ne', x:r.x+r.w,   y:r.y},
-        {name:'e',  x:r.x+r.w,   y:cy},
-        {name:'se', x:r.x+r.w,   y:r.y+r.h},
-        {name:'s',  x:cx,        y:r.y+r.h},
-        {name:'sw', x:r.x,       y:r.y+r.h},
-        {name:'w',  x:r.x,       y:cy},
-      ];
+    function drawEdgeGrips(r){
+      // Bar lengths scale with rect, within min/max bounds
+      const horizLen = Math.max(28, Math.min(72, r.w * 0.3));
+      const vertLen  = Math.max(28, Math.min(72, r.h * 0.3));
+
+      const cx = r.x + r.w/2;
+      const cy = r.y + r.h/2;
+
+      ctx.lineCap = 'round';
+
+      // helper: double-stroked line for contrast
+      function strokeDouble(x1,y1,x2,y2){
+        ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+        ctx.lineWidth = 6; // shadow/back
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3.5; // front
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      }
+
+      // top bar (centered on top edge)
+      strokeDouble(cx - horizLen/2, r.y, cx + horizLen/2, r.y);
+      // bottom bar
+      strokeDouble(cx - horizLen/2, r.y + r.h, cx + horizLen/2, r.y + r.h);
+      // left bar (centered on left edge)
+      strokeDouble(r.x, cy - vertLen/2, r.x, cy + vertLen/2);
+      // right bar
+      strokeDouble(r.x + r.w, cy - vertLen/2, r.x + r.w, cy + vertLen/2);
     }
+
+    // Corner handles removed; edge-only resizing (plus move)
 
     // Interaction (move + resize via handles OR edges) — no auto-reset
     function attachCropEvents(){
@@ -358,18 +369,11 @@
     function hitTest(p, r){
       if (!r) return null;
 
-      // corner handles
-      for (const h of handlePositions(r)) {
-        if (Math.abs(p.x - h.x) <= HANDLE/2 && Math.abs(p.y - h.y) <= HANDLE/2) {
-          return h.name; // 'nw','n','ne','e','se','s','sw','w'
-        }
-      }
-
-      // edge zones (exclude corner squares)
-      const leftZone   = (p.x >= r.x - EDGE_HIT && p.x <= r.x + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
-      const rightZone  = (p.x >= r.x + r.w - EDGE_HIT && p.x <= r.x + r.w + EDGE_HIT && p.y >= r.y + HANDLE/2 && p.y <= r.y + r.h - HANDLE/2);
-      const topZone    = (p.y >= r.y - EDGE_HIT && p.y <= r.y + EDGE_HIT && p.x >= r.x + HANDLE/2 && p.x <= r.x + r.w - HANDLE/2);
-      const bottomZone = (p.y >= r.y + r.h - EDGE_HIT && p.y <= r.y + r.h + EDGE_HIT && p.x >= r.x + HANDLE/2 && p.x <= r.x + r.w - HANDLE/2);
+      // edge zones (full edge; no corner special-casing)
+      const leftZone   = (p.x >= r.x - EDGE_HIT && p.x <= r.x + EDGE_HIT && p.y >= r.y && p.y <= r.y + r.h);
+      const rightZone  = (p.x >= r.x + r.w - EDGE_HIT && p.x <= r.x + r.w + EDGE_HIT && p.y >= r.y && p.y <= r.y + r.h);
+      const topZone    = (p.y >= r.y - EDGE_HIT && p.y <= r.y + EDGE_HIT && p.x >= r.x && p.x <= r.x + r.w);
+      const bottomZone = (p.y >= r.y + r.h - EDGE_HIT && p.y <= r.y + r.h + EDGE_HIT && p.x >= r.x && p.x <= r.x + r.w);
       if (leftZone)   return 'w';
       if (rightZone)  return 'e';
       if (topZone)    return 'n';
