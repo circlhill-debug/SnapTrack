@@ -167,7 +167,7 @@
     const openManual  = document.getElementById('openManual');
 
     // Scanner overlay elements
-    let scanWrap = null, scanVideo = null, scanOverlay = null, scanCtx = null, scanStatus = null, flashBtn = null, closeScanBtn = null;
+    let scanWrap = null, scanVideo = null, scanOverlay = null, scanCtx = null, scanStatus = null, scanDebug = null, flashBtn = null, closeScanBtn = null;
 
     // --- Crop/drag constants & state ---
     const HANDLE = 14;          // touch corner hit area (visual squares removed)
@@ -331,6 +331,12 @@
       controls.appendChild(closeScanBtn);
 
       inner.appendChild(vidWrap);
+      // Debug line
+      scanDebug = document.createElement('div');
+      scanDebug.className = 'muted';
+      scanDebug.style.cssText = 'color:#9ca3af;font-size:.85rem;max-width:min(100%,720px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      scanDebug.textContent = '';
+      inner.appendChild(scanDebug);
       inner.appendChild(controls);
       scanWrap.appendChild(inner);
       document.body.appendChild(scanWrap);
@@ -350,9 +356,14 @@
           const codes = await detector.detect(scanVideo);
           updateOverlay(codes);
           if (codes && codes.length) {
+            // Prefer linear formats first to avoid QR pickup noise
+            const linearFormats = new Set(['code_128','code_39','ean_13','ean_8','upc_e','itf']);
+            const linear = codes.filter(c => linearFormats.has((c.format||'').toLowerCase()));
+            const ordered = linear.length ? linear : codes;
             // find usable value
-            const vals = codes.map(c => c.rawValue || '').filter(Boolean);
-            for (const v of vals) {
+            for (const c of ordered) {
+              const v = c.rawValue || '';
+              updateDebug(c.format, v);
               // First try strict USPS extraction
               let found = extractUsps(v);
               // Fallback: relax parsing for barcode payloads (often include prefixes)
@@ -379,7 +390,17 @@
     let zxingReader = null;
     async function startZXing(){
       if (!window.ZXing || !ZXing.BrowserMultiFormatReader) throw new Error('ZXing not loaded');
-      zxingReader = new ZXing.BrowserMultiFormatReader();
+      // Restrict ZXing to linear formats to avoid QR/Data Matrix noise
+      const hints = new ZXing.Map();
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+        ZXing.BarcodeFormat.CODE_128,
+        ZXing.BarcodeFormat.ITF,
+        ZXing.BarcodeFormat.CODE_39,
+        ZXing.BarcodeFormat.EAN_13,
+        ZXing.BarcodeFormat.EAN_8,
+        ZXing.BarcodeFormat.UPC_E,
+      ]);
+      zxingReader = new ZXing.BrowserMultiFormatReader(hints);
       // Use constraints to prefer rear camera
       return zxingReader.decodeFromConstraints(
         { video: { facingMode: { ideal: 'environment' } } },
@@ -387,6 +408,8 @@
         (result, err) => {
           if (result && result.getText) {
             const v = result.getText();
+            const fmt = result.getBarcodeFormat ? String(result.getBarcodeFormat()) : 'unknown';
+            updateDebug(fmt, v);
             // Try strict USPS first, then relaxed fallback
             let found = extractUsps(v);
             if (!found.length) found = extractFromBarcode(v);
@@ -412,6 +435,8 @@
       try { if (navigator.vibrate) navigator.vibrate(40); } catch {}
       const shown = (found[0] || '').toString();
       scanStatus.textContent = 'Found: ' + human(shown);
+      // Also prefill manual box for convenience
+      try { if (manualInput) manualInput.value = found[0]; } catch {}
     }
 
     // Overlay helpers
@@ -442,6 +467,12 @@
         strokeRectScaled(box, scaleX, scaleY);
       });
       scanStatus.textContent = 'Scanning…';
+    }
+    function updateDebug(fmt, raw){
+      if (!scanDebug) return;
+      const digits = (raw||'').replace(/\D+/g,'');
+      const short = (raw||'').length > 80 ? (raw.slice(0,80) + '…') : raw;
+      scanDebug.textContent = `Last code: [${fmt||'unknown'}] digits=${digits.length} raw="${short}"`;
     }
     function rectFromPoints(pts){
       const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
