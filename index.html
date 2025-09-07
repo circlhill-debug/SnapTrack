@@ -398,7 +398,9 @@
               if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
             }
             else {
-              scanStatus.textContent = 'Scanning… detected code, parsing…';
+              const dbg = (v || '').toString();
+              const digits = dbg.replace(/\D+/g,'');
+              scanStatus.textContent = 'Detected code, parsing… digits=' + digits.length;
             }
           }
           // ignore err (decode attempts continue)
@@ -453,7 +455,7 @@
       scanCtx.stroke();
     }
 
-    // Relaxed extractor for barcode payloads (handles prefixes like 420 ZIP, etc.)
+    // Relaxed extractor for barcode payloads (handles prefixes like 420 ZIP, FNC1 separators, long runs)
     function extractFromBarcode(raw){
       const s = (raw || '').toUpperCase();
 
@@ -461,33 +463,46 @@
       const intl = Array.from(s.matchAll(/\b([A-Z]{2})\s*(\d{9})\s*(US)\b/g));
       const intlNums = intl.map(m => (m[1] + m[2] + m[3]).toUpperCase());
 
-      // 2) Numeric candidates: collect runs and consider likely USPS lengths
-      const runs = Array.from(s.matchAll(/(\d{18,44})/g)).map(m => m[1]);
-      const allowed = [20,22,26,30,34];
+      // 2) Numeric candidates across the whole payload (strip all non-digits, including GS/RS)
+      const digits = s.replace(/\D+/g,'');
+      const allowed = [20,22,24,26,28,30,34];
       const cand = [];
       const seen = new Set();
-
       const pushUniq = (n) => { if (!n) return; if (!seen.has(n)) { seen.add(n); cand.push(n); } };
 
-      for (const r of runs) {
-        // If the run itself is one of the common lengths, keep it
-        if (allowed.includes(r.length)) pushUniq(r);
-        // Consider substrings within the run for each allowed length (handles prefixed data)
-        for (const L of allowed) {
-          if (r.length < L) continue;
-          for (let i = 0; i <= r.length - L; i++) {
-            const sub = r.slice(i, i + L);
-            // Light heuristic: prefer substrings that start with common USPS prefixes (92/94)
-            if (sub.startsWith('92') || sub.startsWith('94') || allowed.includes(sub.length)) pushUniq(sub);
+      if (digits.length) {
+        // If the whole numeric payload is a valid length, keep it
+        if (allowed.includes(digits.length)) pushUniq(digits);
+
+        // Prefer substrings that start with 92/94 (common USPS)
+        const starts = [];
+        for (let i = 0; i < digits.length - 1; i++) {
+          const c2 = digits[i] + digits[i+1];
+          if (c2 === '92' || c2 === '94') starts.push(i);
+        }
+        if (!starts.length) starts.push(0); // fallback: scan from start
+
+        for (const i of starts) {
+          for (const L of allowed) {
+            if (i + L <= digits.length) pushUniq(digits.slice(i, i + L));
           }
         }
       }
 
-      // Combine and sort by existing USPS scorer (if present), else by length desc
+      // 3) Also collect any 18–80 digit runs that might be chunked by non-digits
+      const runs = Array.from(s.matchAll(/(\d{18,80})/g)).map(m => m[1]);
+      for (const r of runs) {
+        if (allowed.includes(r.length)) pushUniq(r);
+        for (const L of allowed) {
+          if (r.length < L) continue;
+          for (let i = 0; i <= r.length - L; i++) pushUniq(r.slice(i, i + L));
+        }
+      }
+
+      // Combine and sort by USPS score
       const all = [...intlNums, ...cand];
       const scored = all.map(n => ({ n, s: (typeof score === 'function') ? score(n) : n.length }))
                         .sort((a,b) => b.s - a.s);
-      // Return up to 3 best unique candidates
       const out = [];
       const seen2 = new Set();
       for (const x of scored) { if (!seen2.has(x.n)) { out.push(x.n); seen2.add(x.n); } if (out.length >= 3) break; }
