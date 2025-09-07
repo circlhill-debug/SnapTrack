@@ -49,7 +49,6 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button id="snapBtn">Snap (Camera)</button>
           <button id="uploadBtn">Upload from Photos</button>
-          <button id="scanBtn">Scan Barcode</button>
         </div>
         </div>
 
@@ -139,7 +138,6 @@
     const fileUpload = document.getElementById('fileUpload');
     const snapBtn    = document.getElementById('snapBtn');
     const uploadBtn  = document.getElementById('uploadBtn');
-    const scanBtn    = document.getElementById('scanBtn');
 
     const previewWrap= document.getElementById('previewWrap');
     const canvas     = document.getElementById('canvas');
@@ -164,8 +162,7 @@
     const manualInput = document.getElementById('manualInput');
     const openManual  = document.getElementById('openManual');
 
-    // Scanner overlay elements
-    let scanWrap = null, scanVideo = null, scanOverlay = null, scanCtx = null, scanStatus = null, scanDebug = null, flashBtn = null, closeScanBtn = null;
+    // Scanner removed for now
 
     // --- Crop/drag constants & state ---
     const HANDLE = 14;          // touch corner hit area (visual squares removed)
@@ -187,7 +184,6 @@
     // Events
     snapBtn.addEventListener('click',   () => fileSnap.click());
     uploadBtn.addEventListener('click', () => fileUpload.click());
-    scanBtn.addEventListener('click',   () => openScanner());
     fileSnap.addEventListener('change', onFile);
     fileUpload.addEventListener('change', onFile);
 
@@ -240,45 +236,7 @@
       });
     }
 
-    // ----- Barcode Scanner (native BarcodeDetector with graceful fallback) -----
-    async function openScanner(){
-      ensureScanUI();
-      scanWrap.style.display = '';
-      scanStatus.textContent = 'Opening camera…';
-      // Prefer native API when available; else load ZXing and fallback
-      if ('BarcodeDetector' in window) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-          scanVideo.srcObject = stream;
-          await scanVideo.play();
-          scanStatus.textContent = 'Scanning…';
-          // Torch availability
-          try {
-            const track = stream.getVideoTracks && stream.getVideoTracks()[0];
-            const caps = track && track.getCapabilities && track.getCapabilities();
-            if (caps && 'torch' in caps) { flashBtn.style.display = ''; flashBtn._track = track; }
-          } catch {}
-          // Keep overlay sized correctly
-          requestAnimationFrame(()=> sizeOverlayToVideo());
-          startDetectLoop();
-          return;
-        } catch (ex) {
-          scanStatus.textContent = 'Camera denied/unavailable. Loading fallback…';
-        }
-      }
-      // Fallback: ZXing (lazy-load script if needed)
-      try {
-        await loadZXing();
-        scanStatus.textContent = 'Scanning…';
-        await startZXing();
-      } catch(ex){
-        scanStatus.textContent = 'Scanner init failed.';
-        if (scanDebug) scanDebug.textContent = 'Init error: ' + (ex && ex.message ? ex.message : ex);
-        // Show inline message; keep overlay open so user can retry
-        err.textContent = 'Barcode scanning not available. Check camera permission for this site and reload.';
-        err.style.display = '';
-      }
-    }
+    // Barcode scanner temporarily removed
 
     async function loadZXing(){
       // Already loaded?
@@ -640,18 +598,7 @@
       return out;
     }
 
-    function closeScanner(stopOnlyAfterHit){
-      if (scanRaf) cancelAnimationFrame(scanRaf), scanRaf = 0;
-      // Stop native stream
-      if (scanVideo && scanVideo.srcObject) {
-        const tracks = scanVideo.srcObject.getTracks();
-        tracks.forEach(t => t.stop());
-        scanVideo.srcObject = null;
-      }
-      // Stop ZXing session
-      if (zxingReader) { try { zxingReader.reset(); } catch {} zxingReader = null; }
-      if (scanWrap) scanWrap.style.display = 'none';
-    }
+    
 
     // Canvas / crop setup
     function setupCanvasForImage(img) {
