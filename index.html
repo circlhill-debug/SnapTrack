@@ -130,8 +130,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <!-- ZXing fallback for Safari/iOS (BarcodeDetector unsupported on some versions) -->
-  <script src="https://unpkg.com/@zxing/library@0.21.2"></script>
   <script>
     // Version
     const SNAPTRACK_VERSION = "v1.9 (2025-08-25)";
@@ -246,7 +244,8 @@
     async function openScanner(){
       ensureScanUI();
       scanWrap.style.display = '';
-      // Prefer native API when available; else use ZXing fallback
+      scanStatus.textContent = 'Opening camera…';
+      // Prefer native API when available; else load ZXing and fallback
       if ('BarcodeDetector' in window) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
@@ -263,17 +262,34 @@
           requestAnimationFrame(()=> sizeOverlayToVideo());
           startDetectLoop();
           return;
-        } catch {}
+        } catch (ex) {
+          scanStatus.textContent = 'Camera denied/unavailable. Loading fallback…';
+        }
       }
-      // Fallback: ZXing
+      // Fallback: ZXing (lazy-load script if needed)
       try {
+        await loadZXing();
         scanStatus.textContent = 'Scanning…';
         await startZXing();
       } catch(ex){
-        err.textContent = 'Barcode scanning not available. Try a different browser or use Upload/Snap + crop.';
+        scanStatus.textContent = 'Scanner init failed.';
+        if (scanDebug) scanDebug.textContent = 'Init error: ' + (ex && ex.message ? ex.message : ex);
+        // Show inline message; keep overlay open so user can retry
+        err.textContent = 'Barcode scanning not available. Check camera permission for this site and reload.';
         err.style.display = '';
-        closeScanner();
       }
+    }
+
+    function loadZXing(){
+      if (window.ZXing && ZXing.BrowserMultiFormatReader) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/@zxing/library@0.21.2';
+        s.async = true;
+        s.onload = () => (window.ZXing && ZXing.BrowserMultiFormatReader) ? resolve() : reject(new Error('ZXing loaded but no reader'));
+        s.onerror = () => reject(new Error('ZXing load failed'));
+        document.head.appendChild(s);
+      });
     }
 
     async function toggleTorch(){
