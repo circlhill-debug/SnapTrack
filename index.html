@@ -356,21 +356,22 @@
           const codes = await detector.detect(scanVideo);
           updateOverlay(codes);
           if (codes && codes.length) {
-            // Prefer linear formats first to avoid QR pickup noise
-            const linearFormats = new Set(['code_128','code_39','ean_13','ean_8','upc_e','itf']);
-            const linear = codes.filter(c => linearFormats.has((c.format||'').toLowerCase()));
-            const ordered = linear.length ? linear : codes;
-            // find usable value
+            // Prefer linear formats first and elongated bounding boxes
+            const ordered = orderNativeDetections(codes);
             for (const c of ordered) {
               const v = c.rawValue || '';
-              updateDebug(c.format, v);
-              // First try strict USPS extraction
+              const fmt = (c.format || 'unknown').toString();
+              updateDebug(fmt, v);
+              const digits = (v||'').replace(/\D+/g,'');
+              if (digits.length < 18) {
+                scanStatus.textContent = `Detected ${fmt} ${digits.length}-digits (not USPS). Looking for 20–34.`;
+                continue;
+              }
+              // Try strict USPS first, then relaxed fallback
               let found = extractUsps(v);
-              // Fallback: relax parsing for barcode payloads (often include prefixes)
               if (!found.length) found = extractFromBarcode(v);
               if (found.length) {
                 onDetected(v, found);
-                // stop and surface results
                 closeScanner(true);
                 candidates = found;
                 renderCandidates();
@@ -400,6 +401,8 @@
         ZXing.BarcodeFormat.EAN_8,
         ZXing.BarcodeFormat.UPC_E,
       ]);
+      // Try to prefer CODE_128 by decoding hints (if supported)
+      try { hints.set(ZXing.DecodeHintType.ASSUME_CODE_128, true); } catch {}
       zxingReader = new ZXing.BrowserMultiFormatReader(hints);
       // Use constraints to prefer rear camera
       return zxingReader.decodeFromConstraints(
@@ -410,6 +413,12 @@
             const v = result.getText();
             const fmt = result.getBarcodeFormat ? String(result.getBarcodeFormat()) : 'unknown';
             updateDebug(fmt, v);
+            // Ignore short codes (<18 digits)
+            const digits = (v||'').replace(/\D+/g,'');
+            if (digits.length < 18) {
+              scanStatus.textContent = `Detected ${fmt} ${digits.length}-digits (not USPS). Looking for 20–34.`;
+              return; // keep scanning
+            }
             // Try strict USPS first, then relaxed fallback
             let found = extractUsps(v);
             if (!found.length) found = extractFromBarcode(v);
@@ -467,6 +476,26 @@
         strokeRectScaled(box, scaleX, scaleY);
       });
       scanStatus.textContent = 'Scanning…';
+    }
+    function orderNativeDetections(codes){
+      const list = Array.from(codes || []);
+      // Rank by: format preference (CODE_128 highest), then aspect ratio (w/h), then area
+      return list
+        .map(c => {
+          const fmt = (c.format||'').toString().toLowerCase();
+          const box = c.boundingBox || c.cornerPoints && rectFromPoints(c.cornerPoints) || {width:0,height:0};
+          const w = Math.max(1, box.width||0), h = Math.max(1, box.height||0);
+          const ratio = w / h;
+          let fmtScore = 0;
+          if (fmt === 'code_128') fmtScore = 3;
+          else if (fmt === 'itf' || fmt === 'code_39') fmtScore = 2;
+          else if (fmt.startsWith('ean') || fmt.startsWith('upc')) fmtScore = 1;
+          else fmtScore = 0;
+          const area = w*h;
+          return { c, score: fmtScore*1e6 + Math.min(500, Math.floor(ratio*100))*1e3 + Math.min(1e6, area) };
+        })
+        .sort((a,b)=>b.score-a.score)
+        .map(x=>x.c);
     }
     function updateDebug(fmt, raw){
       if (!scanDebug) return;
