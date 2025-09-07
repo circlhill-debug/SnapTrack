@@ -46,10 +46,11 @@
             <h3 style="margin:.25rem 0">1) Take or upload a photo</h3>
             <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Or upload and crop first.</p>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button id="snapBtn">Snap (Camera)</button>
-            <button id="uploadBtn">Upload from Photos</button>
-          </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="snapBtn">Snap (Camera)</button>
+          <button id="uploadBtn">Upload from Photos</button>
+          <button id="scanBtn">Scan Barcode</button>
+        </div>
         </div>
 
         <input id="fileSnap"   type="file" accept="image/*" capture="environment" style="display:none" />
@@ -129,6 +130,8 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- ZXing fallback for Safari/iOS (BarcodeDetector unsupported on some versions) -->
+  <script src="https://unpkg.com/@zxing/library@0.21.2"></script>
   <script>
     // Version
     const SNAPTRACK_VERSION = "v1.9 (2025-08-25)";
@@ -138,6 +141,7 @@
     const fileUpload = document.getElementById('fileUpload');
     const snapBtn    = document.getElementById('snapBtn');
     const uploadBtn  = document.getElementById('uploadBtn');
+    const scanBtn    = document.getElementById('scanBtn');
 
     const previewWrap= document.getElementById('previewWrap');
     const canvas     = document.getElementById('canvas');
@@ -162,6 +166,9 @@
     const manualInput = document.getElementById('manualInput');
     const openManual  = document.getElementById('openManual');
 
+    // Scanner overlay elements
+    let scanWrap = null, scanVideo = null, closeScanBtn = null;
+
     // --- Crop/drag constants & state ---
     const HANDLE = 14;          // touch corner hit area (visual squares removed)
     const EDGE_HIT = 18;        // edge resize zone thickness
@@ -182,6 +189,7 @@
     // Events
     snapBtn.addEventListener('click',   () => fileSnap.click());
     uploadBtn.addEventListener('click', () => fileUpload.click());
+    scanBtn.addEventListener('click',   () => openScanner());
     fileSnap.addEventListener('change', onFile);
     fileUpload.addEventListener('change', onFile);
 
@@ -232,6 +240,134 @@
         img.onerror = reject;
         img.src = src;
       });
+    }
+
+    // ----- Barcode Scanner (native BarcodeDetector with graceful fallback) -----
+    async function openScanner(){
+      ensureScanUI();
+      scanWrap.style.display = '';
+      // Prefer native API when available; else use ZXing fallback
+      if ('BarcodeDetector' in window) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+          scanVideo.srcObject = stream;
+          await scanVideo.play();
+          startDetectLoop();
+          return;
+        } catch {}
+      }
+      // Fallback: ZXing
+      try {
+        await startZXing();
+      } catch(ex){
+        err.textContent = 'Barcode scanning not available. Try a different browser or use Upload/Snap + crop.';
+        err.style.display = '';
+        closeScanner();
+      }
+    }
+
+    function ensureScanUI(){
+      if (scanWrap) return;
+      // Create lightweight overlay
+      scanWrap = document.createElement('div');
+      scanWrap.id = 'scanWrap';
+      scanWrap.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:none;';
+
+      const inner = document.createElement('div');
+      inner.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:8px;';
+
+      scanVideo = document.createElement('video');
+      scanVideo.id = 'scanVideo';
+      scanVideo.setAttribute('playsinline','');
+      scanVideo.style.cssText = 'width:min(100%,720px);height:auto;background:#000;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.4)';
+
+      const controls = document.createElement('div');
+      controls.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:space-between;width:min(100%,720px)';
+      const tip = document.createElement('div');
+      tip.className = 'muted';
+      tip.style.color = '#d1d5db';
+      tip.textContent = 'Aim at the barcode. Auto-detect when clear.';
+      closeScanBtn = document.createElement('button');
+      closeScanBtn.textContent = 'Close Scanner';
+      closeScanBtn.onclick = closeScanner;
+      controls.appendChild(tip);
+      controls.appendChild(closeScanBtn);
+
+      inner.appendChild(scanVideo);
+      inner.appendChild(controls);
+      scanWrap.appendChild(inner);
+      document.body.appendChild(scanWrap);
+    }
+
+    let detector = null;
+    let scanRaf = 0;
+    async function startDetectLoop(){
+      try {
+        if (!detector) detector = new BarcodeDetector({ formats: ['code_128','code_39','ean_13','ean_8','upc_e','itf','pdf417','data_matrix','aztec','qr_code'] });
+      } catch {
+        detector = new BarcodeDetector();
+      }
+      const step = async () => {
+        if (scanWrap && scanWrap.style.display === 'none') return; // closed
+        try {
+          const codes = await detector.detect(scanVideo);
+          if (codes && codes.length) {
+            // find usable value
+            const vals = codes.map(c => c.rawValue || '').filter(Boolean);
+            for (const v of vals) {
+              const found = extractUsps(v);
+              if (found.length) {
+                // stop and surface results
+                closeScanner(true);
+                candidates = found;
+                renderCandidates();
+                if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
+                return;
+              }
+            }
+          }
+        } catch {}
+        scanRaf = requestAnimationFrame(step);
+      };
+      scanRaf = requestAnimationFrame(step);
+    }
+
+    // ZXing fallback
+    let zxingReader = null;
+    async function startZXing(){
+      if (!window.ZXing || !ZXing.BrowserMultiFormatReader) throw new Error('ZXing not loaded');
+      zxingReader = new ZXing.BrowserMultiFormatReader();
+      // Use constraints to prefer rear camera
+      return zxingReader.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        scanVideo,
+        (result, err) => {
+          if (result && result.getText) {
+            const v = result.getText();
+            const found = extractUsps(v);
+            if (found.length) {
+              closeScanner(true);
+              candidates = found;
+              renderCandidates();
+              if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
+            }
+          }
+          // ignore err (decode attempts continue)
+        }
+      );
+    }
+
+    function closeScanner(stopOnlyAfterHit){
+      if (scanRaf) cancelAnimationFrame(scanRaf), scanRaf = 0;
+      // Stop native stream
+      if (scanVideo && scanVideo.srcObject) {
+        const tracks = scanVideo.srcObject.getTracks();
+        tracks.forEach(t => t.stop());
+        scanVideo.srcObject = null;
+      }
+      // Stop ZXing session
+      if (zxingReader) { try { zxingReader.reset(); } catch {} zxingReader = null; }
+      if (scanWrap) scanWrap.style.display = 'none';
     }
 
     // Canvas / crop setup
