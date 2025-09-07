@@ -417,25 +417,28 @@
         ZXing.BarcodeFormat.EAN_8,
         ZXing.BarcodeFormat.UPC_E,
       ]);
-      // Try to prefer CODE_128 by decoding hints (if supported)
       try { hints.set(ZXing.DecodeHintType.ASSUME_CODE_128, true); } catch {}
       zxingReader = new ZXing.BrowserMultiFormatReader(hints);
-      // Use constraints to prefer rear camera
-      return zxingReader.decodeFromConstraints(
+
+      const constraintsList = [
         { video: { facingMode: { ideal: 'environment' } } },
+        { video: true },
+        { video: { facingMode: { ideal: 'user' } } },
+      ];
+
+      const run = (constraints) => zxingReader.decodeFromConstraints(
+        constraints,
         scanVideo,
         (result, err) => {
           if (result && result.getText) {
             const v = result.getText();
             const fmt = result.getBarcodeFormat ? String(result.getBarcodeFormat()) : 'unknown';
             updateDebug(fmt, v);
-            // Ignore short codes (<18 digits)
             const digits = (v||'').replace(/\D+/g,'');
             if (digits.length < 18) {
               scanStatus.textContent = `Detected ${fmt} ${digits.length}-digits (not USPS). Looking for 20–34.`;
-              return; // keep scanning
+              return;
             }
-            // Try strict USPS first, then relaxed fallback
             let found = extractUsps(v);
             if (!found.length) found = extractFromBarcode(v);
             if (found.length) {
@@ -444,16 +447,28 @@
               candidates = found;
               renderCandidates();
               if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
-            }
-            else {
+            } else {
               const dbg = (v || '').toString();
-              const digits = dbg.replace(/\D+/g,'');
-              scanStatus.textContent = 'Detected code, parsing… digits=' + digits.length;
+              const digits2 = dbg.replace(/\D+/g,'');
+              scanStatus.textContent = 'Detected code, parsing… digits=' + digits2.length;
             }
           }
-          // ignore err (decode attempts continue)
+          if (err && scanDebug) scanDebug.textContent = 'ZXing decode error: ' + err;
         }
       );
+
+      // Probe constraints to avoid ZXing failing to open camera; then start with the first that works
+      for (const c of constraintsList) {
+        try {
+          if (scanDebug) scanDebug.textContent = 'Starting fallback with constraints: ' + JSON.stringify(c);
+          const s = await navigator.mediaDevices.getUserMedia(c);
+          s.getTracks().forEach(t=>t.stop());
+          return run(c);
+        } catch (e) {
+          continue; // try next
+        }
+      }
+      throw new Error('Could not start fallback scanner (camera not available)');
     }
 
     function onDetected(raw, found){
