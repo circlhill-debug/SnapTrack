@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SnapTrack — USPS OCR</title>
+
+  <style>
+    :root{--ink:#111;--muted:#6b7280;--line:#e5e7eb;--bg:#f8fafc}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial}
+    .wrap{max-width:720px;margin:0 auto;padding:20px}
+    h1{font-size:1.75rem;margin:0 0 .25rem}
+    p{margin:.25rem 0}
+    .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    button{cursor:pointer;border:1px solid #d1d5db;background:#fff;padding:10px 14px;border-radius:12px}
+    button.primary{background:#111;color:#fff;border-color:#111}
+    button:active{transform:scale(.99)}
+    .muted{color:var(--muted)}
+    .grid{display:grid;gap:16px}
+    .img{width:100%;border:1px solid var(--line);border-radius:12px;touch-action:none}
+    .bar{height:8px;border-radius:999px;background:#eef2f7;overflow:hidden}
+    .bar>div{height:100%;background:#111;width:0%}
+    textarea{width:100%;height:150px;border:1px solid var(--line);border-radius:12px;padding:10px;background:#f7f7f8;font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:.9rem}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .pill{display:inline-block;font-size:.75rem;padding:.25rem .5rem;border-radius:999px;border:1px solid #d1d5db}
+    label.switch{display:flex;align-items:center;gap:.5rem;font-size:.9rem}
+    .list > button{width:100%;text-align:left}
+    .good{background:#ecfdf5;border-color:#a7f3d0}
+    .bad{background:#fef2f2;border-color:#fecaca;color:#b91c1c}
+    footer{margin-top:16px;color:#6b7280;font-size:.85rem;text-align:center}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header style="margin-bottom:16px">
+      <h1>SnapTrack — USPS OCR</h1>
+      <p class="muted">Snap or upload a USPS label. Crop appears immediately—drag inside to move, drag edges to resize, then tap <em>Use crop</em>.</p>
+    </header>
+
+    <div class="grid">
+      <!-- 1) Capture / Upload -->
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+          <div>
+            <h3 style="margin:.25rem 0">1) Take or upload a photo</h3>
+            <p class="muted" style="margin:0">Rear camera in good light; fill the frame. Or upload and crop first.</p>
+          </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="snapBtn">Snap (Camera)</button>
+          <button id="uploadBtn">Upload from Photos</button>
+          <button id="scanBtn">Scan Barcode</button>
+        </div>
+        </div>
+
+        <input id="fileSnap"   type="file" accept="image/*" capture="environment" style="display:none" />
+        <input id="fileUpload" type="file" accept="image/*" style="display:none" />
+
+        <!-- Preview + Crop UI -->
+        <div id="previewWrap" style="margin-top:12px;display:none">
+          <canvas id="canvas" class="img"></canvas>
+          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; align-items:center">
+            <button id="useCrop" class="primary">Use crop</button>
+            <button id="useFull">Use full image</button>
+            <span class="muted" style="font-size:.9rem">Drag inside to move; drag edges to resize.</span>
+          </div>
+        </div>
+
+        <!-- Progress + Errors -->
+        <div id="progWrap" style="margin-top:12px;display:none">
+          <div class="muted" style="font-weight:600;margin-bottom:6px">
+            Reading text… <span id="pct">0</span>%
+          </div>
+          <div class="bar"><div id="bar"></div></div>
+        </div>
+        <div id="err" class="card bad" style="margin-top:12px;display:none"></div>
+      </section>
+
+      <!-- 2) Candidates + Manual -->
+      <section class="card">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+          <div>
+            <h3 style="margin:.25rem 0">2) Candidates found</h3>
+            <p class="muted" style="margin:0">Tap a number to open USPS in a new tab.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="autoOpen" checked />
+            <span class="pill">Auto-open if only one</span>
+          </label>
+        </div>
+
+        <div id="best" class="card good" style="margin-top:12px;display:none">
+          <div class="muted" style="font-size:.75rem;font-weight:700;text-transform:uppercase;margin-bottom:4px">Best match</div>
+          <div id="bestNum" class="mono" style="font-size:1.15rem;word-break:break-all"></div>
+          <div style="margin-top:8px;display:flex;gap:8px">
+            <button class="primary" id="openBest">Open on USPS</button>
+            <button id="copyBest">Copy</button>
+          </div>
+        </div>
+
+        <div id="many" class="list" style="margin-top:12px;display:grid;gap:8px"></div>
+
+        <!-- Manual Paste Box -->
+        <div class="card" style="margin-top:12px">
+          <h4 style="margin:.25rem 0">Manual (paste or edit)</h4>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <input id="manualInput" class="mono" placeholder="Paste tracking number…"
+                   style="flex:1;min-width:220px;padding:10px;border:1px solid var(--line);border-radius:10px" />
+            <button id="openManual" class="primary">Open on USPS</button>
+          </div>
+          <p class="muted" style="margin:.5rem 0 0">Tip: copy from “Raw OCR” if needed.</p>
+        </div>
+      </section>
+
+      <!-- 3) Raw OCR -->
+      <section class="card">
+        <h3 style="margin:.25rem 0">3) Raw OCR (troubleshooting)</h3>
+        <p class="muted" style="margin:0 0 6px">If this looks messy, try another angle or more light.</p>
+        <textarea id="raw" readonly></textarea>
+      </section>
+
+      <section class="muted" style="font-size:.9rem">
+        <p><strong>Tips:</strong> Avoid glare; tilt slightly if needed. Everything runs locally—no images are uploaded.</p>
+      </section>
+
+      <footer>
+        © 2025 Dave — SnapTrack v1.9 • Built for USPS label OCR
+      </footer>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <!-- ZXing fallback for Safari/iOS (BarcodeDetector unsupported on some versions) -->
+  <script src="https://unpkg.com/@zxing/library@0.21.2"></script>
+  <script>
+    // Version
+    const SNAPTRACK_VERSION = "v1.9 (2025-08-25)";
+
+    // Elements
+    const fileSnap   = document.getElementById('fileSnap');
+    const fileUpload = document.getElementById('fileUpload');
+    const snapBtn    = document.getElementById('snapBtn');
+    const uploadBtn  = document.getElementById('uploadBtn');
+    const scanBtn    = document.getElementById('scanBtn');
+
+    const previewWrap= document.getElementById('previewWrap');
+    const canvas     = document.getElementById('canvas');
+    const ctx        = canvas.getContext('2d');
+
+    const progWrap   = document.getElementById('progWrap');
+    const pct        = document.getElementById('pct');
+    const bar        = document.getElementById('bar');
+    const err        = document.getElementById('err');
+
+    const rawOut     = document.getElementById('raw');
+    const many       = document.getElementById('many');
+    const bestBox    = document.getElementById('best');
+    const bestNum    = document.getElementById('bestNum');
+    const openBest   = document.getElementById('openBest');
+    const copyBest   = document.getElementById('copyBest');
+    const autoOpen   = document.getElementById('autoOpen');
+
+    const useCropBtn = document.getElementById('useCrop');
+    const useFullBtn = document.getElementById('useFull');
+
+    const manualInput = document.getElementById('manualInput');
+    const openManual  = document.getElementById('openManual');
+
+    // Scanner overlay elements
+    let scanWrap = null, scanVideo = null, closeScanBtn = null;
+
+    // --- Crop/drag constants & state ---
+    const HANDLE = 14;          // touch corner hit area (visual squares removed)
+    const EDGE_HIT = 18;        // edge resize zone thickness
+    const MIN_W = 20, MIN_H = 20;
+
+    let candidates = [];
+    let best = null;
+
+    let originalImg = null;            // HTMLImageElement
+    let displayScale = 1;
+    let cropRect = null;               // {x,y,w,h}
+    let isDragging = false;
+
+    let dragMode = null;               // 'move' | 'nw'|'ne'|'se'|'sw'|'n'|'s'|'w'|'e' | null
+    let dragStart = null;              // {x,y}
+    let startRect = null;              // snapshot of rect
+
+    // Events
+    snapBtn.addEventListener('click',   () => fileSnap.click());
+    uploadBtn.addEventListener('click', () => fileUpload.click());
+    scanBtn.addEventListener('click',   () => openScanner());
+    fileSnap.addEventListener('change', onFile);
+    fileUpload.addEventListener('change', onFile);
+
+    useCropBtn.addEventListener('click', async () => {
+      if (!originalImg) return;
+      const region = validCrop() ? cropFromCanvas() : makeDownscaledCanvas(originalImg);
+      await ocrCanvas(region);
+    });
+    useFullBtn.addEventListener('click', async () => {
+      if (!originalImg) return;
+      await ocrCanvas(makeDownscaledCanvas(originalImg));
+    });
+
+    openBest.addEventListener('click', () => { if (best) openUSPS(best); });
+    copyBest.addEventListener('click', async () => { if (best) await navigator.clipboard.writeText(best); });
+
+    openManual.addEventListener('click', () => {
+      const val = (manualInput.value || '').trim().toUpperCase();
+      if (!val) return;
+      const cleaned = /^[A-Z]{2}\d{9}US$/i.test(val) ? val : val.replace(/\D+/g,'');
+      if (!cleaned) return;
+      openUSPS(cleaned);
+    });
+
+    // File handling (robust loader)
+    async function onFile(e){
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      resetUI();
+
+      const url = URL.createObjectURL(f);
+      try {
+        originalImg = await loadImage(url);
+        setupCanvasForImage(originalImg);
+        previewWrap.style.display = '';
+      } catch(ex){
+        err.textContent = 'Could not load image. Try another photo.';
+        err.style.display = '';
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    function loadImage(src){
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    }
+
+    // ----- Barcode Scanner (native BarcodeDetector with graceful fallback) -----
+    async function openScanner(){
+      ensureScanUI();
+      scanWrap.style.display = '';
+      // Prefer native API when available; else use ZXing fallback
+      if ('BarcodeDetector' in window) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+          scanVideo.srcObject = stream;
+          await scanVideo.play();
+          startDetectLoop();
+          return;
+        } catch {}
+      }
+      // Fallback: ZXing
+      try {
+        await startZXing();
+      } catch(ex){
+        err.textContent = 'Barcode scanning not available. Try a different browser or use Upload/Snap + crop.';
+        err.style.display = '';
+        closeScanner();
+      }
+    }
+
+    function ensureScanUI(){
+      if (scanWrap) return;
+      // Create lightweight overlay
+      scanWrap = document.createElement('div');
+      scanWrap.id = 'scanWrap';
+      scanWrap.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.85);display:none;';
+
+      const inner = document.createElement('div');
+      inner.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;gap:8px;';
+
+      scanVideo = document.createElement('video');
+      scanVideo.id = 'scanVideo';
+      scanVideo.setAttribute('playsinline','');
+      scanVideo.style.cssText = 'width:min(100%,720px);height:auto;background:#000;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.4)';
+
+      const controls = document.createElement('div');
+      controls.style.cssText = 'display:flex;gap:8px;align-items:center;justify-content:space-between;width:min(100%,720px)';
+      const tip = document.createElement('div');
+      tip.className = 'muted';
+      tip.style.color = '#d1d5db';
+      tip.textContent = 'Aim at the barcode. Auto-detect when clear.';
+      closeScanBtn = document.createElement('button');
+      closeScanBtn.textContent = 'Close Scanner';
+      closeScanBtn.onclick = closeScanner;
+      controls.appendChild(tip);
+      controls.appendChild(closeScanBtn);
+
+      inner.appendChild(scanVideo);
+      inner.appendChild(controls);
+      scanWrap.appendChild(inner);
+      document.body.appendChild(scanWrap);
+    }
+
+    let detector = null;
+    let scanRaf = 0;
+    async function startDetectLoop(){
+      try {
+        if (!detector) detector = new BarcodeDetector({ formats: ['code_128','code_39','ean_13','ean_8','upc_e','itf','pdf417','data_matrix','aztec','qr_code'] });
+      } catch {
+        detector = new BarcodeDetector();
+      }
+      const step = async () => {
+        if (scanWrap && scanWrap.style.display === 'none') return; // closed
+        try {
+          const codes = await detector.detect(scanVideo);
+          if (codes && codes.length) {
+            // find usable value
+            const vals = codes.map(c => c.rawValue || '').filter(Boolean);
+            for (const v of vals) {
+              const found = extractUsps(v);
+              if (found.length) {
+                // stop and surface results
+                closeScanner(true);
+                candidates = found;
+                renderCandidates();
+                if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
+                return;
+              }
+            }
+          }
+        } catch {}
+        scanRaf = requestAnimationFrame(step);
+      };
+      scanRaf = requestAnimationFrame(step);
+    }
+
+    // ZXing fallback
+    let zxingReader = null;
+    async function startZXing(){
+      if (!window.ZXing || !ZXing.BrowserMultiFormatReader) throw new Error('ZXing not loaded');
+      zxingReader = new ZXing.BrowserMultiFormatReader();
+      // Use constraints to prefer rear camera
+      return zxingReader.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        scanVideo,
+        (result, err) => {
+          if (result && result.getText) {
+            const v = result.getText();
+            const found = extractUsps(v);
+            if (found.length) {
+              closeScanner(true);
+              candidates = found;
+              renderCandidates();
+              if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
+            }
+          }
+          // ignore err (decode attempts continue)
+        }
+      );
+    }
+
+    function closeScanner(stopOnlyAfterHit){
+      if (scanRaf) cancelAnimationFrame(scanRaf), scanRaf = 0;
+      // Stop native stream
+      if (scanVideo && scanVideo.srcObject) {
+        const tracks = scanVideo.srcObject.getTracks();
+        tracks.forEach(t => t.stop());
+        scanVideo.srcObject = null;
+      }
+      // Stop ZXing session
+      if (zxingReader) { try { zxingReader.reset(); } catch {} zxingReader = null; }
+      if (scanWrap) scanWrap.style.display = 'none';
+    }
+
+    // Canvas / crop setup
+    function setupCanvasForImage(img) {
+      const maxW = Math.min(1200, Math.max(360, Math.floor(window.innerWidth - 40)));
+      const scale = Math.min(1, maxW / img.naturalWidth);
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      displayScale = scale;
+
+      setDefaultCrop();
+      drawCanvas();
+      attachCropEvents();
+    }
+
+    function setDefaultCrop(){
+      const w = Math.round(canvas.width * 0.92);
+      const h = Math.round(canvas.height * 0.28);
+      cropRect = {
+        x: Math.round((canvas.width - w) / 2),
+        y: Math.round((canvas.height - h) / 2),
+        w, h
+      };
+    }
+
+    // Rendering (outline + subtle edge grips)
+    function drawCanvas() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if (!originalImg) return;
+
+      ctx.drawImage(originalImg, 0, 0, originalImg.naturalWidth*displayScale, originalImg.naturalHeight*displayScale);
+
+      if (cropRect) {
+        ctx.save();
+        // double-stroke outline
+        ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+        ctx.lineWidth = 5;
+        ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+
+        // subtle edge grip bars (no bulky squares)
+        drawEdgeGrips(cropRect);
+        ctx.restore();
+      }
+    }
+
+    function drawEdgeGrips(r){
+      // Bar lengths scale with rect, within min/max bounds
+      const horizLen = Math.max(28, Math.min(72, r.w * 0.3));
+      const vertLen  = Math.max(28, Math.min(72, r.h * 0.3));
+
+      const cx = r.x + r.w/2;
+      const cy = r.y + r.h/2;
+
+      ctx.lineCap = 'round';
+
+      // helper: double-stroked line for contrast
+      function strokeDouble(x1,y1,x2,y2){
+        ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+        ctx.lineWidth = 6; // shadow/back
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3.5; // front
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+      }
+
+      // top bar (centered on top edge)
+      strokeDouble(cx - horizLen/2, r.y, cx + horizLen/2, r.y);
+      // bottom bar
+      strokeDouble(cx - horizLen/2, r.y + r.h, cx + horizLen/2, r.y + r.h);
+      // left bar (centered on left edge)
+      strokeDouble(r.x, cy - vertLen/2, r.x, cy + vertLen/2);
+      // right bar
+      strokeDouble(r.x + r.w, cy - vertLen/2, r.x + r.w, cy + vertLen/2);
+    }
+
+    // Corner handles removed; edge-only resizing (plus move)
+
+    // Interaction (move + resize via handles OR edges) — no auto-reset
+    function attachCropEvents(){
+      canvas.onpointerdown = (ev) => {
+        ev.preventDefault();
+        const p = canvasPoint(ev);
+        dragStart = p;
+        startRect = cropRect ? {...cropRect} : null;
+
+        const hit = hitTest(p, cropRect);
+        if (hit) {
+          dragMode = hit; // 'move' or handle/edge name
+          isDragging = true;
+          canvas.setPointerCapture(ev.pointerId);
+        } else {
+          // keep current rect; do nothing
+          dragMode = null;
+          isDragging = false;
+        }
+        drawCanvas();
+      };
+
+      canvas.onpointermove = (ev) => {
+        if (!isDragging || !cropRect || !dragMode) return;
+        const p = canvasPoint(ev);
+        const dx = p.x - dragStart.x;
+        const dy = p.y - dragStart.y;
+
+        if (dragMode === 'move' && startRect) {
+          cropRect.x = clamp(0, startRect.x + dx, canvas.width - startRect.w);
+          cropRect.y = clamp(0, startRect.y + dy, canvas.height - startRect.h);
+        } else if (startRect) {
+          resizeFromHandle(dragMode, startRect, dx, dy);
+        }
+
+        // Enforce min size & bounds
+        if (cropRect.w < MIN_W) cropRect.w = MIN_W;
+        if (cropRect.h < MIN_H) cropRect.h = MIN_H;
+        if (cropRect.x < 0) cropRect.x = 0;
+        if (cropRect.y < 0) cropRect.y = 0;
+        if (cropRect.x + cropRect.w > canvas.width)  cropRect.x = canvas.width  - cropRect.w;
+        if (cropRect.y + cropRect.h > canvas.height) cropRect.y = canvas.height - cropRect.h;
+
+        drawCanvas();
+      };
+
+      canvas.onpointerup = (ev) => {
+        isDragging = false;
+        dragMode = null;
+        canvas.releasePointerCapture(ev.pointerId);
+        drawCanvas();
+      };
+    }
+
+    // Touch-friendly hit-test: corners first, then edges, then move
+    function hitTest(p, r){
+      if (!r) return null;
+
+      // edge zones (full edge; no corner special-casing)
+      const leftZone   = (p.x >= r.x - EDGE_HIT && p.x <= r.x + EDGE_HIT && p.y >= r.y && p.y <= r.y + r.h);
+      const rightZone  = (p.x >= r.x + r.w - EDGE_HIT && p.x <= r.x + r.w + EDGE_HIT && p.y >= r.y && p.y <= r.y + r.h);
+      const topZone    = (p.y >= r.y - EDGE_HIT && p.y <= r.y + EDGE_HIT && p.x >= r.x && p.x <= r.x + r.w);
+      const bottomZone = (p.y >= r.y + r.h - EDGE_HIT && p.y <= r.y + r.h + EDGE_HIT && p.x >= r.x && p.x <= r.x + r.w);
+      if (leftZone)   return 'w';
+      if (rightZone)  return 'e';
+      if (topZone)    return 'n';
+      if (bottomZone) return 's';
+
+      // inside rect → move
+      if (pointInRect(p, r)) return 'move';
+      return null;
+    }
+
+    function pointInRect(p, r){
+      return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
+    }
+
+    function resizeFromHandle(mode, r0, dx, dy){
+      let x = r0.x, y = r0.y, w = r0.w, h = r0.h;
+
+      const left   = () => { x = clamp(0, r0.x + dx, r0.x + r0.w - MIN_W); w = (r0.x + r0.w) - x; };
+      const right  = () => { w = clamp(MIN_W, r0.w + dx, canvas.width - r0.x); };
+      const top    = () => { y = clamp(0, r0.y + dy, r0.y + r0.h - MIN_H); h = (r0.y + r0.h) - y; };
+      const bottom = () => { h = clamp(MIN_H, r0.h + dy, canvas.height - r0.y); };
+
+      if (mode.includes('w')) left();
+      if (mode.includes('e')) right();
+      if (mode.includes('n')) top();
+      if (mode.includes('s')) bottom();
+
+      cropRect.x = Math.round(x);
+      cropRect.y = Math.round(y);
+      cropRect.w = Math.round(w);
+      cropRect.h = Math.round(h);
+    }
+
+    function clamp(min, v, max){ return Math.max(min, Math.min(max, v)); }
+
+    function canvasPoint(ev){
+      const r = canvas.getBoundingClientRect();
+      const x = (ev.clientX - r.left) * (canvas.width / r.width);
+      const y = (ev.clientY - r.top)  * (canvas.height / r.height);
+      return { x: Math.max(0, Math.min(canvas.width,  x)),
+               y: Math.max(0, Math.min(canvas.height, y)) };
+    }
+
+    function validCrop(){ return cropRect && cropRect.w >= MIN_W && cropRect.h >= MIN_H; }
+
+    // ---- OCR helpers: always-on thresholding for high contrast ----
+    const THRESHOLD = 128; // tweak 110–150 if needed
+
+    function applyThresholdToCanvas(c){
+      const cctx = c.getContext('2d', { willReadFrequently: true });
+      const imgData = cctx.getImageData(0, 0, c.width, c.height);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i+1], b = d[i+2];
+        const gray = 0.299*r + 0.587*g + 0.114*b;
+        const bw = gray > THRESHOLD ? 255 : 0;
+        d[i] = d[i+1] = d[i+2] = bw;
+      }
+      cctx.putImageData(imgData, 0, 0);
+    }
+
+    // Crop mapped to ORIGINAL image + threshold
+    function cropFromCanvas(){
+      const srcX = Math.max(0, Math.round(cropRect.x / displayScale));
+      const srcY = Math.max(0, Math.round(cropRect.y / displayScale));
+      const srcW = Math.max(1, Math.round(cropRect.w / displayScale));
+      const srcH = Math.max(1, Math.round(cropRect.h / displayScale));
+
+      const c = document.createElement('canvas');
+      c.width = srcW;
+      c.height = srcH;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(originalImg, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+
+      applyThresholdToCanvas(c);
+      return c;
+    }
+
+    // Full image downscale + threshold
+    function makeDownscaledCanvas(img, maxDim=1800){
+      const w0 = img.naturalWidth, h0 = img.naturalHeight;
+      const scale = Math.min(1, maxDim / Math.max(w0, h0));
+      const w = Math.round(w0 * scale), h = Math.round(h0 * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(img, 0, 0, w, h);
+
+      applyThresholdToCanvas(c);
+      return c;
+    }
+
+    // OCR runner
+    async function ocrCanvas(srcCanvas){
+      try {
+        err.style.display = 'none';
+        progWrap.style.display = '';
+        pct.textContent = '0'; bar.style.width = '0%';
+
+        const res = await Tesseract.recognize(srcCanvas, 'eng', {
+          logger: m => {
+            if (m.status === 'recognizing text' && typeof m.progress === 'number') {
+              const p = Math.round(m.progress * 100);
+              pct.textContent = String(p);
+              bar.style.width = p + '%';
+            }
+          }
+        });
+
+        const text = (res.data.text || '');
+        rawOut.value = text;
+
+        candidates = extractUsps(text);
+        renderCandidates();
+
+        if (candidates.length === 1 && autoOpen.checked) openUSPS(candidates[0]);
+      } catch(ex){
+        console.error('Tesseract error:', ex);
+        err.textContent = 'OCR stumbled. Try a brighter, sharper photo that fills the label.';
+        err.style.display = '';
+      } finally {
+        progWrap.style.display = 'none';
+      }
+    }
+
+    // USPS + extraction (unchanged)
+    function openUSPS(n){
+      const url = new URL('https://tools.usps.com/go/TrackConfirmAction');
+      url.searchParams.set('tLabels', n);
+      window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    }
+
+    function human(n){
+      if (/^[A-Z]{2}\d{9}US$/i.test(n)) return n.toUpperCase();
+      return n.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
+    }
+
+    function score(n){
+      let s = 0; const L = n.length;
+      if (L === 22) s += 6;
+      else if (L === 20) s += 5;
+      else if (L >= 26 && L <= 34) s += 2;
+      if (/^(92|93|94)/.test(n)) s += 3;
+      if (/^[A-Z]{2}\d{9}US$/i.test(n)) s += 7;
+      return s;
+    }
+
+    function extractUsps(text){
+      const cleaned = normalize(text);
+      const intl = Array.from(cleaned.matchAll(/\b([A-Z]{2})\s*(\d{3})\s*(\d{3})\s*(\d{3})\s*(US)\b/gi))
+        .map(m => (m[1] + m[2] + m[3] + m[4] + m[5]).toUpperCase());
+      const longNums = Array.from(cleaned.matchAll(/((?:\d[\s-]?){20,34})/g))
+        .map(m => m[0].replace(/[\s-]/g,''))
+        .filter(n => [20,22,26,30,34].includes(n.length));
+      const seen = new Set(), out = [];
+      [...intl, ...longNums].forEach(n => { if(!seen.has(n)){ seen.add(n); out.push(n); }});
+      return out;
+    }
+
+    function normalize(text){
+      let t = (text || '').toUpperCase();
+      t = t.replace(/(?<=\d|\s)O(?=\d|\s)/g,'0');
+      t = t.replace(/(?<=\d|\s)[IL](?=\d|\s)/g,'1');
+      t = t.replace(/(?<=\d|\s)S(?=\d|\s)/g,'5');
+      t = t.replace(/(?<=\d|\s)B(?=\d|\s)/g,'8');
+      t = t.replace(/(?<=\d|\s)Z(?=\d|\s)/g,'2');
+      return t;
+    }
+
+    function resetUI(){
+      err.style.display = 'none';
+      many.innerHTML = '';
+      bestBox.style.display = 'none';
+      rawOut.value = '';
+      candidates = [];
+      best = null;
+      cropRect = null;
+      dragMode = null;
+      drawCanvas();
+    }
+
+    function renderCandidates(){
+      if(!candidates.length){
+        many.innerHTML = '<p class="muted" style="margin:0">No tracking numbers captured yet.</p>';
+        many.style.display = '';
+        return;
+      }
+      const scored = candidates.map(n => ({n, score: score(n)})).sort((a,b)=>b.score-a.score);
+      best = scored[0].n;
+
+      bestNum.textContent = human(best);
+      bestBox.style.display = '';
+      manualInput.value = best;
+
+      if(candidates.length > 1){
+        many.style.display = 'grid';
+        many.innerHTML = '';
+        candidates.forEach((n) => {
+          const b = document.createElement('button');
+          b.className = 'card';
+          b.textContent = human(n);
+          b.onclick = () => openUSPS(n);
+          many.appendChild(b);
+        });
+      } else {
+        many.style.display = 'none';
+      }
+    }
+  </script>
+
+  <!--
+  MIT License (ok to also add as LICENSE file in repo)
+
+  Copyright (c) 2025 Dave
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+  THE SOFTWARE.
+  -->
+</body>
+</html>
